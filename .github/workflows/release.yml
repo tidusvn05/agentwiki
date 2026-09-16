@@ -16,10 +16,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: create GitHub release
+      - name: create GitHub release (idempotent)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${{ github.ref_name }}" --title "agentwiki ${{ github.ref_name }}" --generate-notes
+        run: |
+          if ! gh release view "${{ github.ref_name }}" >/dev/null 2>&1; then
+            gh release create "${{ github.ref_name }}" \
+              --title "agentwiki ${{ github.ref_name }}" --generate-notes
+          fi
 
   build:
     needs: create-release

@@ -3,6 +3,13 @@ name = "agentwiki"
 version = "0.1.0"
 edition = "2024"
 description = "CLI-agent-native C4 documentation generator (deepwiki-rs rewrite)"
+authors = ["tidusvn05 <tidusv05@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tidusvn05/agentwiki"
+homepage = "https://github.com/tidusvn05/agentwiki"
+readme = "README.md"
+keywords = ["documentation", "c4", "architecture", "llm", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0.104"

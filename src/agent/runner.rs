@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use serde_json::Value;
-use tokio::task::JoinSet;
 
 use super::context::ResearchContext;
 use super::materials;
@@ -24,40 +24,47 @@ use crate::quota::CallRecord;
 pub async fn run_spec(spec: &AgentSpec, pctx: &Arc<PipelineCtx>) -> Result<()> {
     let started = Instant::now();
     if let ExecKind::Deterministic(f) = spec.exec {
+        pctx.progress.add_total(1);
+        pctx.progress.start(spec.name);
         let dep = first_dep(spec, pctx).await;
         let md = f(&pctx.scan, &pctx.config, &dep)?;
         pctx.ctx.insert(spec.name, Value::String(md)).await;
         pctx.stats.lock().await.record(spec.name, started.elapsed());
+        pctx.progress.finish(spec.name);
         return Ok(());
     }
 
     match spec.fan_out {
         None => {
+            pctx.progress.add_total(1);
             let v = run_instance(spec, spec.name, None, pctx).await?;
             pctx.ctx.insert(spec.name, v).await;
         }
         Some(fan) => {
             let targets = spec::expand(fan, spec, pctx).await;
+            pctx.progress.add_total(targets.len() as u64);
             if targets.is_empty() {
                 // E.g. domain_modules produced no domains — store an empty
                 // result so dependents see a valid (empty) context.
                 pctx.ctx.insert(spec.name, Value::Object(Default::default())).await;
                 return Ok(());
             }
-            let mut set = JoinSet::new();
-            for t in targets {
-                let (spec, pctx) = (spec.clone(), Arc::clone(pctx));
-                set.spawn(async move {
-                    let key = spec.instance_key(Some(&t.key));
-                    run_instance(&spec, &key, Some(&t), &pctx)
+            // FuturesUnordered, not JoinSet: these futures live inside this
+            // task, so aborting it drops them synchronously — which drops
+            // each in-flight `Child` and kills the CLI (kill_on_drop).
+            let mut pending = FuturesUnordered::new();
+            for t in &targets {
+                let (spec, key) = (spec.clone(), spec.instance_key(Some(&t.key)));
+                pending.push(async move {
+                    run_instance(&spec, &key, Some(t), pctx)
                         .await
                         .map(|v| (t, v))
                 });
             }
             let mut results = Vec::new();
-            while let Some(r) = set.join_next().await {
-                let (t, v) = r.map_err(|e| Error::Pipeline(format!("join: {e}")))??;
-                results.push((t, v));
+            while let Some(r) = pending.next().await {
+                let (t, v) = r?;
+                results.push((t.clone(), v));
             }
             aggregate(spec, results, pctx).await?;
         }
@@ -120,8 +127,21 @@ async fn first_dep(spec: &AgentSpec, pctx: &Arc<PipelineCtx>) -> Value {
     }
 }
 
-/// One agent invocation: cache → quota → backend → validate → retry.
+/// One agent invocation, tracked on the progress bar.
 async fn run_instance(
+    spec: &AgentSpec,
+    key: &str,
+    target: Option<&FanTarget>,
+    pctx: &Arc<PipelineCtx>,
+) -> Result<Value> {
+    pctx.progress.start(key);
+    let result = run_instance_inner(spec, key, target, pctx).await;
+    pctx.progress.finish(key);
+    result
+}
+
+/// The invocation itself: cache → quota → backend → validate → retry.
+async fn run_instance_inner(
     spec: &AgentSpec,
     key: &str,
     target: Option<&FanTarget>,
@@ -148,14 +168,21 @@ async fn run_instance(
         }
     }
 
-    // Bound concurrent CLI calls across all fan-out instances.
-    let _permit = pctx.semaphore.acquire().await.map_err(|e| {
-        Error::Pipeline(format!("semaphore: {e}"))
-    })?;
+    // Bound concurrent CLI calls across all fan-out instances; cancel
+    // unwinds promptly even while queued behind the semaphore.
+    let _permit = tokio::select! {
+        biased;
+        p = pctx.semaphore.acquire() => p
+            .map_err(|e| Error::Pipeline(format!("semaphore: {e}")))?,
+        () = pctx.cancel.cancelled() => return Err(Error::Cancelled),
+    };
 
     let mut feedback = String::new();
     let mut last_err = Error::Pipeline("no attempts".to_string());
     for attempt in 0..=pctx.config.limits.retry_attempts {
+        if pctx.cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         pctx.quota.consume().await?;
         let req = AgentRequest {
             prompt: format!("{prompt}{feedback}"),
@@ -165,7 +192,14 @@ async fn run_instance(
             agent: key.to_string(),
         };
         let started = Instant::now();
-        let (status, err) = match backend.run(req).await {
+        // Biased: a response that just landed still gets cached even if a
+        // cancel arrived in the same instant.
+        let response = tokio::select! {
+            biased;
+            r = backend.run(req) => r,
+            () = pctx.cancel.cancelled() => return Err(Error::Cancelled),
+        };
+        let (status, err) = match response {
             Ok(r) => match parse_output(spec, &r.text, key) {
                 Ok(v) => {
                     pctx.cache.put(
@@ -199,7 +233,7 @@ async fn run_instance(
     }
 
     // Fallback: Efficient-tier agents retry once on the Powerful model.
-    if spec.tier != ModelTier::Efficient {
+    if spec.tier != ModelTier::Efficient || pctx.cancel.is_cancelled() {
         return Err(last_err);
     }
     let fb_str = pctx.config.model_for(ModelTier::Powerful).to_string();

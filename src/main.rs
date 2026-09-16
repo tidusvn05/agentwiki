@@ -21,8 +21,41 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let pctx = agentwiki::PipelineCtx::new(config, None).await?;
-    agentwiki::run(&pctx).await?;
-    Ok(())
+
+    // First SIGINT/SIGTERM → cooperative cancel (in-flight child CLIs are
+    // killed as their futures drop). A second signal force-exits.
+    let cancel = pctx.cancel.clone();
+    tokio::spawn(async move {
+        termination_signal().await;
+        if !cancel.is_cancelled() {
+            cancel.cancel();
+            termination_signal().await;
+        }
+        std::process::exit(130);
+    });
+
+    let result = agentwiki::run(&pctx).await;
+    if pctx.cancel.is_cancelled() {
+        // Conventional SIGINT exit code; the bar already shows "cancelled".
+        std::process::exit(130);
+    }
+    result.map_err(Into::into)
+}
+
+/// Wait for SIGINT, or SIGTERM on unix.
+async fn termination_signal() {
+    let int = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    if let Ok(mut term) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        tokio::select! {
+            _ = int => {}
+            _ = term.recv() => {}
+        }
+        return;
+    }
+    let _ = int.await;
 }
 
 /// `-v` info, `-vv` debug, `-vvv` trace; `RUST_LOG` overrides.

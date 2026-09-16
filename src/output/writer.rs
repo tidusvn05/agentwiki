@@ -61,7 +61,7 @@ fn write_file(out_dir: &Path, rel: &str, content: &str) -> Result<PathBuf> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
     }
-    std::fs::write(&path, content).map_err(|e| Error::io(&path, e))?;
+    crate::util::write_atomic(&path, content.as_bytes())?;
     Ok(path)
 }
 

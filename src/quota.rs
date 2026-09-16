@@ -75,7 +75,7 @@ impl Quota {
         if let Some(parent) = self.state_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
         }
-        std::fs::write(&self.state_path, body).map_err(|e| Error::io(&self.state_path, e))
+        crate::util::write_atomic(&self.state_path, body.as_bytes())
     }
 
     /// Append one audit line to `calls.jsonl`. Best-effort — a logging

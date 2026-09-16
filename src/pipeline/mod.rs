@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::registry;
 use crate::agent::spec::Phase;
@@ -38,6 +39,10 @@ pub struct PipelineCtx {
     pub stats: Mutex<RunStats>,
     /// Sanitized cwd for embedded-mode calls.
     pub empty_cwd: PathBuf,
+    /// Terminal progress display (hidden on non-TTY).
+    pub progress: crate::progress::Progress,
+    /// Cooperative shutdown — cancelled by the signal handler in `main`.
+    pub cancel: CancellationToken,
     /// Constructed backends by kind.
     backends: HashMap<BackendKind, Arc<dyn AgentBackend>>,
 }
@@ -100,6 +105,8 @@ impl PipelineCtx {
             prompts: PromptLoader::new(config.prompts_dir.clone()),
             semaphore: Semaphore::new(config.max_parallels),
             stats: Mutex::new(RunStats::default()),
+            progress: crate::progress::Progress::new(),
+            cancel: CancellationToken::new(),
             ctx: ResearchContext::new(),
             empty_cwd,
             backends,
@@ -127,8 +134,62 @@ fn default_backends(config: &Config) -> Result<HashMap<BackendKind, Arc<dyn Agen
     Ok(map)
 }
 
-/// Run the full pipeline. Returns stats for the summary report.
+/// Guard holding `<internal>/run.lock`; removes the file on drop.
+struct RunLock {
+    path: PathBuf,
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// `create_new` lock against double-runs. A stale lock (dead pid, or an
+/// unreadable/truncated file) is reclaimed; a live one fails fast.
+fn acquire_run_lock(internal: &std::path::Path) -> Result<RunLock> {
+    let path = internal.join("run.lock");
+    for _ in 0..2 {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                use std::io::Write as _;
+                let _ = writeln!(f, "{}", std::process::id());
+                return Ok(RunLock { path });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Some(pid) = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+                    && PathBuf::from(format!("/proc/{pid}")).exists()
+                {
+                    return Err(Error::AlreadyRunning { pid });
+                }
+                // Stale or unreadable lock — reclaim it.
+                let _ = std::fs::remove_file(&path);
+            }
+            Err(e) => return Err(Error::io(&path, e)),
+        }
+    }
+    Err(Error::Pipeline(format!(
+        "could not acquire run lock {}",
+        path.display()
+    )))
+}
+
+/// Run the full pipeline, settling the progress bar on the way out.
 pub async fn run(pctx: &Arc<PipelineCtx>) -> Result<()> {
+    let _lock = acquire_run_lock(&pctx.config.internal_path)?;
+    let result = run_pipeline(pctx).await;
+    match &result {
+        Ok(()) => pctx.progress.done(),
+        Err(Error::Cancelled) => pctx.progress.cancel(),
+        Err(e) => pctx.progress.fail(e),
+    }
+    result
+}
+
+/// The pipeline proper: research → compose → write → verify.
+async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
     let started = Instant::now();
 
     if pctx.config.skip_research {
@@ -141,9 +202,17 @@ pub async fn run(pctx: &Arc<PipelineCtx>) -> Result<()> {
         pctx.ctx.save(&path).await?;
     }
 
+    if pctx.cancel.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+
     if !pctx.config.skip_documentation {
         compose(pctx).await?;
         crate::output::write_docs(pctx).await?;
+    }
+
+    if pctx.cancel.is_cancelled() {
+        return Err(Error::Cancelled);
     }
 
     if !pctx.config.skip_documentation {
@@ -172,16 +241,38 @@ async fn compose(pctx: &Arc<PipelineCtx>) -> Result<()> {
 }
 
 /// Execute specs level by level; specs within a level run in parallel.
+/// Cancellation aborts in-flight tasks (dropping them kills their child
+/// CLIs) and refuses to start the next level.
 async fn run_level_order(specs: &[crate::agent::AgentSpec], pctx: &Arc<PipelineCtx>) -> Result<()> {
     for (i, level) in registry::topo_levels(specs).iter().enumerate() {
+        if pctx.cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         tracing::info!(level = i, specs = level.len(), "DAG level");
         let mut set = tokio::task::JoinSet::new();
         for &idx in level {
             let (spec, pctx) = (specs[idx].clone(), Arc::clone(pctx));
             set.spawn(async move { run_spec(&spec, &pctx).await });
         }
-        while let Some(r) = set.join_next().await {
-            r.map_err(|e| Error::Pipeline(format!("join: {e}")))??;
+        loop {
+            tokio::select! {
+                biased;
+                r = set.join_next() => {
+                    match r {
+                        Some(r) => r.map_err(|e| Error::Pipeline(format!("join: {e}")))??,
+                        None => break,
+                    }
+                }
+                () = pctx.cancel.cancelled() => {
+                    set.abort_all();
+                    // Aborted tasks drop their backend futures, which kills
+                    // the child CLIs (kill_on_drop). Bound the drain so a
+                    // task stuck in a sync poll can't hang shutdown.
+                    let drain = async { while set.join_next().await.is_some() {} };
+                    let _ = tokio::time::timeout(Duration::from_secs(3), drain).await;
+                    return Err(Error::Cancelled);
+                }
+            }
         }
     }
     Ok(())

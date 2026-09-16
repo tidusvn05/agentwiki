@@ -65,7 +65,7 @@ impl ResearchContext {
         }
         let body = serde_json::to_string_pretty(&map)
             .map_err(|e| Error::Pipeline(format!("research ctx serialize: {e}")))?;
-        std::fs::write(path, body).map_err(|e| Error::io(path, e))
+        crate::util::write_atomic(path, body.as_bytes())
     }
 
     /// Load a previously saved context.

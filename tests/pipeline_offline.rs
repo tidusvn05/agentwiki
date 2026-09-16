@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use agentwiki::backend::mock::MockBackend;
 use agentwiki::backend::{AgentBackend, BackendKind};
@@ -159,6 +160,71 @@ async fn second_run_is_fully_cached() {
     .unwrap();
     run(&pctx2).await.unwrap();
     assert_eq!(mock.calls.lock().unwrap().len(), calls_after_first);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_aborts_mid_flight() {
+    // Slow mock keeps dir_summary in flight; cancelling the token must
+    // unwind the pipeline quickly (aborted tasks drop their futures).
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(
+        MockBackend::canned(CANNED).with_delay(Duration::from_secs(30)),
+    );
+    let pctx = PipelineCtx::new(test_config(&tmp, 100), Some(mock_backends(mock)))
+        .await
+        .unwrap();
+
+    let pctx2 = pctx.clone();
+    let handle = tokio::spawn(async move { run(&pctx2).await });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    pctx.cancel.cancel();
+
+    let err = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("run did not finish within 5s of cancel")
+        .expect("run task panicked")
+        .unwrap_err();
+    assert!(matches!(err, Error::Cancelled), "expected Cancelled, got {err:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn second_concurrent_run_refused() {
+    // While one run holds .agentwiki/run.lock, another on the same
+    // internal dir must fail fast with AlreadyRunning.
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(
+        MockBackend::canned(CANNED).with_delay(Duration::from_secs(5)),
+    );
+    let pctx = PipelineCtx::new(
+        test_config(&tmp, 100),
+        Some(mock_backends(mock.clone())),
+    )
+    .await
+    .unwrap();
+    let pctx2 = pctx.clone();
+    let first = tokio::spawn(async move { run(&pctx2).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let pctx_b = PipelineCtx::new(test_config(&tmp, 100), Some(mock_backends(mock)))
+        .await
+        .unwrap();
+    let err = run(&pctx_b).await.unwrap_err();
+    assert!(
+        matches!(err, Error::AlreadyRunning { .. }),
+        "expected AlreadyRunning, got {err:?}"
+    );
+    first.abort();
+    // Awaiting ensures the aborted run dropped its lock guard.
+    let _ = first.await;
+
+    // After the first run's lock is gone, a fresh run proceeds.
+    let pctx_c = PipelineCtx::new(
+        test_config(&tmp, 100),
+        Some(mock_backends(Arc::new(MockBackend::canned(CANNED)))),
+    )
+    .await
+    .unwrap();
+    run(&pctx_c).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

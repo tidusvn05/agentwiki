@@ -31,9 +31,11 @@ pub mod config;
 pub mod error;
 pub mod output;
 pub mod pipeline;
+pub mod progress;
 pub mod prompt;
 pub mod quota;
 pub mod scanner;
+pub mod util;
 
 pub use config::{CliOverrides, Config, Mode, ModelTier, TargetLanguage};
 pub use error::{Error, Result};

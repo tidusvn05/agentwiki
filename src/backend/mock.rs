@@ -19,6 +19,9 @@ pub type MockHandler =
 /// Deterministic in-process backend.
 pub struct MockBackend {
     handler: MockHandler,
+    /// Artificial per-call latency — an async sleep, so cancellation still
+    /// interrupts the call (lets tests exercise mid-flight paths).
+    delay: std::time::Duration,
     /// Every request seen (for assertions).
     pub calls: Mutex<Vec<String>>,
 }
@@ -30,8 +33,15 @@ impl MockBackend {
     ) -> Self {
         Self {
             handler: Box::new(handler),
+            delay: std::time::Duration::ZERO,
             calls: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Builder: inject `d` of artificial latency into every call.
+    pub fn with_delay(mut self, d: std::time::Duration) -> Self {
+        self.delay = d;
+        self
     }
 
     /// Mock that returns canned bodies per agent: exact match on
@@ -73,6 +83,9 @@ impl AgentBackend for MockBackend {
             .lock()
             .map(|mut c| c.push(req.agent.clone()))
             .unwrap_or_default();
+        if !self.delay.is_zero() {
+            tokio::time::sleep(self.delay).await;
+        }
         let started = Instant::now();
         match (self.handler)(&req) {
             Ok(text) => Ok(AgentResult {

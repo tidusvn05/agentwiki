@@ -90,7 +90,7 @@ impl Cache {
             meta,
         })
         .map_err(|e| Error::Pipeline(format!("cache serialize: {e}")))?;
-        std::fs::write(&path, body).map_err(|e| Error::io(&path, e))
+        crate::util::write_atomic(&path, body.as_bytes())
     }
 }
 

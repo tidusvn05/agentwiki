@@ -157,6 +157,21 @@ impl Default for ScanConfig {
                 "__mocks__".to_string(),
                 "out".to_string(),
                 "coverage".to_string(),
+                // Vendored deps + language-specific build trees — only
+                // reachable when git_tracked_only can't help (non-git dirs).
+                "vendor".to_string(),
+                "deps".to_string(),
+                "_build".to_string(),
+                "bower_components".to_string(),
+                "Pods".to_string(),
+                "DerivedData".to_string(),
+                ".gradle".to_string(),
+                ".svelte-kit".to_string(),
+                ".next".to_string(),
+                ".nuxt".to_string(),
+                ".nx".to_string(),
+                ".turbo".to_string(),
+                ".output".to_string(),
             ],
             excluded_files: vec![
                 "*.lock".to_string(),

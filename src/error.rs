@@ -88,6 +88,17 @@ pub enum Error {
         dep: String,
     },
 
+    /// SIGINT/SIGTERM requested a cooperative shutdown.
+    #[error("cancelled")]
+    Cancelled,
+
+    /// A second agentwiki process already holds the run lock.
+    #[error("another agentwiki run is already active (pid {pid})")]
+    AlreadyRunning {
+        /// Pid recorded in `run.lock`.
+        pid: u32,
+    },
+
     /// Catch-all for pipeline-level failures.
     #[error("{0}")]
     Pipeline(String),

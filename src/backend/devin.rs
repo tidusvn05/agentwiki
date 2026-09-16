@@ -35,6 +35,9 @@ impl DevinBackend {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Drop of the Child (cancel, timeout) must kill the CLI — an orphan
+        // would keep spending calls with nobody to cache the result.
+        cmd.kill_on_drop(true);
         sanitized_env(&mut cmd);
         cmd
     }

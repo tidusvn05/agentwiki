@@ -34,7 +34,7 @@ Toàn bộ logic nằm trong `src/pipeline/mod.rs`, chia thành bốn khối ch�
 
 ### 2.1. `PipelineCtx` — bối cảnh dùng chung
 
-[mod.rs:23-48](../../src/pipeline/mod.rs)
+[mod.rs:23-48](../../../src/pipeline/mod.rs)
 
 `PipelineCtx` được bọc trong `Arc` và clone rẻ cho từng task con. Các trường đáng chú ý:
 
@@ -51,7 +51,7 @@ Toàn bộ logic nằm trong `src/pipeline/mod.rs`, chia thành bốn khối ch�
 
 ### 2.2. `RunLock` — khoá chống chạy kép
 
-[mod.rs:137-177](../../src/pipeline/mod.rs)
+[mod.rs:137-177](../../../src/pipeline/mod.rs)
 
 Cơ chế lock file dùng `OpenOptions::create_new(true)` — thao tác atomic `O_EXCL` của filesystem, không có TOCTOU race:
 
@@ -65,7 +65,7 @@ Thiết kế này đúng cho VPS Linux (kiểm tra pid qua `/proc`); lock của 
 
 ### 2.3. `run_level_order` — bộ lập lịch DAG theo tầng
 
-[mod.rs:246-279](../../src/pipeline/mod.rs)
+[mod.rs:246-279](../../../src/pipeline/mod.rs)
 
 Đây là trái tim của module. Thuật toán:
 
@@ -192,9 +192,9 @@ sequenceDiagram
 
 | File | Vai trò |
 |---|---|
-| [mod.rs](../../src/pipeline/mod.rs) | Toàn bộ module: `PipelineCtx`, `RunStats`, `RunLock`, `run`, `run_level_order`, `dry_run_report` |
-| [main.rs](../../src/main.rs) | Entry point binary: parse CLI, init tracing, nhánh dry-run, signal handler hai giai đoạn |
-| [lib.rs](../../src/lib.rs) | Khai báo module + re-export `PipelineCtx`, `RunStats`, `run`, `dry_run_report` |
+| [mod.rs](../../../src/pipeline/mod.rs) | Toàn bộ module: `PipelineCtx`, `RunStats`, `RunLock`, `run`, `run_level_order`, `dry_run_report` |
+| [main.rs](../../../src/main.rs) | Entry point binary: parse CLI, init tracing, nhánh dry-run, signal handler hai giai đoạn |
+| [lib.rs](../../../src/lib.rs) | Khai báo module + re-export `PipelineCtx`, `RunStats`, `run`, `dry_run_report` |
 | `src/agent/registry.rs`, `src/agent/spec.rs` | Cung cấp `research_specs`/`compose_specs`/`topo_levels` — định nghĩa DAG mà scheduler thực thi |
 | `src/agent/runner.rs` | `run_spec` — execution engine được spawn trong từng task của JoinSet |
 | `src/scanner/mod.rs` | `scan` — Phase 0 được gọi trong `PipelineCtx::new` và nhánh dry-run |

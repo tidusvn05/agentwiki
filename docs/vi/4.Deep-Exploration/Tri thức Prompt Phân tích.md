@@ -68,7 +68,7 @@ Thống kê placeholder trên toàn kho: `{{agentic_note}}` ×13, `{{language_in
 
 ## 3. Giao diện chính
 
-Module được tiêu thụ qua `PromptLoader` trong [prompt.rs](../../src/prompt.rs):
+Module được tiêu thụ qua `PromptLoader` trong [prompt.rs](../../../src/prompt.rs):
 
 - **`PromptLoader::new(dir: Option<PathBuf>)`** — `dir` là `config.prompts_dir` (thư mục ghi đè trên đĩa), có thể `None`.
 - **`PromptLoader::load(name) -> Result<String>`** — nhận tên tương đối (`"system_context.md"`, `"editors/deep_dive.md"`); ưu tiên file trong `prompts_dir`, fallback sang bản nhúng `include_str!`; tên lạ trả `Error::Prompt`.

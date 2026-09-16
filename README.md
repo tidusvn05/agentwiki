@@ -22,8 +22,9 @@ agentwiki.docs/
 └── __AgentWiki_Summary__.md         # timings, calls, cache hits
 ```
 
-A real self-generated example lives in [`docs/`](docs/) — agentwiki's own
-architecture docs, produced by `agentwiki default`.
+A real self-generated example lives in [`docs/en/`](docs/en/) — agentwiki's
+own architecture docs, produced by `agentwiki` itself
+([`docs/vi/`](docs/vi/) for the Vietnamese version).
 
 ## Features
 

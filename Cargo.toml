@@ -1,0 +1,37 @@
+[package]
+name = "agentwiki"
+version = "0.1.0"
+edition = "2024"
+description = "CLI-agent-native C4 documentation generator (deepwiki-rs rewrite)"
+
+[dependencies]
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+clap = { version = "4.6.7", features = ["derive"] }
+glob = "0.3.4"
+hex = "0.4.3"
+regex = "1.13.1"
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+tempfile = "3.27.0"
+thiserror = "2.0.20"
+time = { version = "0.3.55", features = ["formatting", "macros"] }
+tokio = { version = "1.53.1", features = [
+    "rt-multi-thread",
+    "process",
+    "macros",
+    "time",
+    "sync",
+    "fs",
+    "io-util",
+] }
+toml = "1.1.6"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+walkdir = "2.5.0"
+
+[dev-dependencies]
+assert_fs = "1.1.4"
+tempfile = "3.27.0"

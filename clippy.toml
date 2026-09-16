@@ -1,0 +1,2 @@
+# Clippy configuration for agentwiki.
+# Disallow unwrap/expect outside tests is enforced via lint attributes in lib.rs.

@@ -1,0 +1,5 @@
+# Stable options only — unstable ones (imports_granularity, wrap_comments)
+# would need nightly rustfmt; kept here as comments for reference.
+# imports_granularity = "Crate"
+# wrap_comments = true
+max_width = 100

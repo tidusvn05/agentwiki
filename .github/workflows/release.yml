@@ -19,7 +19,7 @@ jobs:
       - name: create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" --title "agentwiki $GITHUB_REF_NAME" --generate-notes
+        run: gh release create "${{ github.ref_name }}" --title "agentwiki ${{ github.ref_name }}" --generate-notes
 
   build:
     needs: create-release
@@ -63,4 +63,4 @@ jobs:
       - name: upload asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" agentwiki-${{ matrix.target }}.* --clobber
+        run: gh release upload "${{ github.ref_name }}" agentwiki-${{ matrix.target }}.* --clobber

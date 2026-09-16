@@ -22,6 +22,9 @@ agentwiki.docs/
 └── __AgentWiki_Summary__.md         # timings, calls, cache hits
 ```
 
+A real self-generated example lives in [`docs/`](docs/) — agentwiki's own
+architecture docs, produced by `agentwiki default`.
+
 ## Features
 
 - **DAG pipeline** — research agents (dir summaries, system context, domain
@@ -57,14 +60,14 @@ billing.
 
 ## Install
 
-### Prebuilt binary
+### Prebuilt binary (no source checkout needed)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tidusvn05/agentwiki/main/install.sh | sh
 ```
 
-installs to `~/.local/bin/agentwiki` (Linux x86_64, macOS Intel & Apple
-Silicon; Windows binaries are on the
+downloads the latest release binary straight to `~/.local/bin/agentwiki`
+(Linux x86_64, macOS Intel & Apple Silicon; Windows binaries are on the
 [Releases](https://github.com/tidusvn05/agentwiki/releases) page).
 
 ### cargo install
@@ -169,3 +172,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and PRs welcome.
 
 Licensed under either of [Apache License 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT) at your option.
+
+Portions ported from [deepwiki-rs](https://github.com/sopaco/deepwiki-rs)
+(MIT © Sopaco) — see [NOTICE](NOTICE).

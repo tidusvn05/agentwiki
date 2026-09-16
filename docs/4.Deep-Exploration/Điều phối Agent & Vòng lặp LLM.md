@@ -26,7 +26,7 @@ Ranho giới trách nhiệm: `pipeline/` quyết định *khi nào* spec chạy 
 
 ### 3.1 `AgentSpec` — một node trong DAG
 
-[spec.rs:106-126](file:///home/ruan/datspace/agentwiki/src/agent/spec.rs)
+[spec.rs:106-126](../../src/agent/spec.rs)
 
 Mỗi spec mô tả:
 
@@ -43,20 +43,20 @@ Mỗi spec mô tả:
 
 ### 3.2 `SchemaSpec` và `schema_spec<T>()`
 
-[spec.rs:21-54](file:///home/ruan/datspace/agentwiki/src/agent/spec.rs)
+[spec.rs:21-54](../../src/agent/spec.rs)
 
 `schema_spec::<T>()` là factory generic: `json_schema` trả `schemars::schema_for!(T)` dưới dạng `Value` để nhúng vào `{{schema_block}}`; `validate` thực hiện `serde_json::from_value::<T>` rồi re-serialize — nhờ đó giá trị lưu trong context luôn là canonical form của struct report. Có một chi tiết khoan dung: nếu model bọc object trong array một phần tử, `validate` thử sole element trước khi trả `Error::Validation` kèm tail 300 ký tự của raw JSON phục vụ chẩn đoán.
 
 ### 3.3 Fan-out: `expand`
 
-[spec.rs:149-185](file:///home/ruan/datspace/agentwiki/src/agent/spec.rs)
+[spec.rs:149-185](../../src/agent/spec.rs)
 
 - `PerDir` → mỗi `DirectoryInfo` trong `scan.directories` thành một `FanTarget` (key = rel_path, `"."` cho root).
 - `PerDomain` → đọc `DomainModulesReport` đã lưu trong ctx dưới key `domain_modules`, mỗi `DomainModule` thành một `FanTarget` (key = domain name). Đây là điểm DAG *phụ thuộc dữ liệu động*: số instance của `key_module`/`deep_dive` chỉ biết sau khi `domain_modules` chạy xong.
 
 ### 3.4 `ResearchContext`
 
-[context.rs:16-53](file:///home/ruan/datspace/agentwiki/src/agent/context.rs)
+[context.rs:16-53](../../src/agent/context.rs)
 
 Store async đơn giản bọc `tokio::sync::RwLock<HashMap<String, Value>>`. API: `insert`, `get`, `get_typed<T>` (deserialize qua `serde_json::from_value`, nuốt lỗi thành `None`), `contains`, `keys` (sorted), `snapshot`. `save`/`load` persist ra `research.json` qua `write_atomic` — nền tảng cho cờ `--skip-research` của pipeline.
 
@@ -105,7 +105,7 @@ flowchart TD
 
 ### 5.2 `aggregate` — gom kết quả fan-out
 
-[runner.rs:77-120](file:///home/ruan/datspace/agentwiki/src/agent/runner.rs)
+[runner.rs:77-120](../../src/agent/runner.rs)
 
 - `dir_summary`: mỗi response được deserialize thành `DirectorySummaryResponse`, merge với metadata scanner qua `materials::dossier_from` (điền `file_path` — model chỉ trả tên file, `purpose` phân loại heuristic theo tên thư mục) → ctx lưu `Vec<DirectoryDossier>`.
 - PerDomain khác: ctx lưu map `{domain_name: result}`; `key_module` được tự stamp `domain_name` vì model không echo ổn định.
@@ -142,7 +142,7 @@ Chi tiết quan trọng:
 
 ### 5.4 `extract_json` — ba chiến lược trích xuất
 
-[runner.rs:398-438](file:///home/ruan/datspace/agentwiki/src/agent/runner.rs)
+[runner.rs:398-438](../../src/agent/runner.rs)
 
 1. **Strict**: `serde_json::from_str` trên toàn bộ response đã trim.
 2. **Fenced**: tìm block ```` ```json ```` đầu tiên, parse body tới ```` ``` ```` kế tiếp.

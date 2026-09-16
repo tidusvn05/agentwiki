@@ -1,7 +1,7 @@
 # AgentWiki Run Summary
 
 - Generated: 2026-09-16T08:59:12.393371609Z
-- Project: `/home/ruan/datspace/agentwiki`
+- Project: [agentwiki](https://github.com/tidusvn05/agentwiki)
 - Total: 912.5s
 - CLI calls: 13
 - Cache hits: 29

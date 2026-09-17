@@ -1,6 +1,6 @@
 [package]
 name = "agentwiki"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "CLI-agent-native C4 documentation generator (deepwiki-rs rewrite)"
 authors = ["tidusvn05 <tidusv05@gmail.com>"]

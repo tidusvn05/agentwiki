@@ -129,7 +129,8 @@ fn default_backends(config: &Config) -> Result<HashMap<BackendKind, Arc<dyn Agen
     let mut map = HashMap::new();
     for m in [&config.models.efficient, &config.models.powerful] {
         let (kind, _) = BackendKind::parse(m)?;
-        map.entry(kind).or_insert_with(|| crate::backend::for_kind(kind));
+        map.entry(kind)
+            .or_insert_with(|| crate::backend::for_kind(kind));
     }
     Ok(map)
 }
@@ -150,7 +151,11 @@ impl Drop for RunLock {
 fn acquire_run_lock(internal: &std::path::Path) -> Result<RunLock> {
     let path = internal.join("run.lock");
     for _ in 0..2 {
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
             Ok(mut f) => {
                 use std::io::Write as _;
                 let _ = writeln!(f, "{}", std::process::id());
@@ -160,7 +165,7 @@ fn acquire_run_lock(internal: &std::path::Path) -> Result<RunLock> {
                 if let Some(pid) = std::fs::read_to_string(&path)
                     .ok()
                     .and_then(|s| s.trim().parse::<u32>().ok())
-                    && PathBuf::from(format!("/proc/{pid}")).exists()
+                    && crate::sys::pid_alive(pid)
                 {
                     return Err(Error::AlreadyRunning { pid });
                 }

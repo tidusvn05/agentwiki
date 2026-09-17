@@ -3,13 +3,25 @@
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use agentwiki::cli::Args;
+use agentwiki::cli::{Args, Command};
 use agentwiki::config::{CliOverrides, Config};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     init_tracing(args.verbose);
+
+    // `doctor` is read-only: it must not scan, take the run lock, or
+    // install the cancellation handler.
+    if let Some(Command::Doctor(d)) = args.command {
+        let code = agentwiki::doctor::run(
+            d.project_path.or(args.project_path),
+            d.config.or(args.config),
+            d.fix,
+        )
+        .await;
+        std::process::exit(code);
+    }
 
     let overrides = CliOverrides::from(&args);
     let config = Config::load(&overrides, args.config.as_deref())?;
@@ -46,8 +58,7 @@ async fn main() -> anyhow::Result<()> {
 async fn termination_signal() {
     let int = tokio::signal::ctrl_c();
     #[cfg(unix)]
-    if let Ok(mut term) =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
     {
         tokio::select! {
             _ = int => {}

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::{CliOverrides, TargetLanguage};
 
@@ -15,6 +15,10 @@ pub struct Args {
     /// (`[profiles.<name>]` section).
     #[arg(value_name = "PROFILE")]
     pub profile: Option<String>,
+
+    /// Subcommands (`doctor`). Any other first token is read as PROFILE.
+    #[command(subcommand)]
+    pub command: Option<Command>,
 
     /// Repository path to document.
     #[arg(short = 'p', long)]
@@ -71,6 +75,30 @@ pub struct Args {
     /// Verbose logging (`-v` info, `-vv` debug, `-vvv` trace).
     #[arg(short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
+}
+
+/// Subcommands. `doctor` shadows a profile of the same name.
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Health-check the environment: agent CLIs on PATH, running or
+    /// orphaned agent processes, `.agentwiki/` state, config sanity.
+    Doctor(DoctorArgs),
+}
+
+/// `agentwiki doctor` options.
+#[derive(Debug, Clone, clap::Args)]
+pub struct DoctorArgs {
+    /// Repository path to inspect (defaults to top-level `-p` or cwd).
+    #[arg(short = 'p', long)]
+    pub project_path: Option<PathBuf>,
+
+    /// Path to agentwiki.toml (defaults to top-level `-c`).
+    #[arg(short = 'c', long)]
+    pub config: Option<PathBuf>,
+
+    /// Also clean up: remove a stale run.lock and leftover tempfiles.
+    #[arg(long)]
+    pub fix: bool,
 }
 
 /// clap-side language enum (converted to [`TargetLanguage`]).

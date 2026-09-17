@@ -28,6 +28,7 @@ pub mod backend;
 pub mod cache;
 pub mod cli;
 pub mod config;
+pub mod doctor;
 pub mod error;
 pub mod output;
 pub mod pipeline;
@@ -35,6 +36,7 @@ pub mod progress;
 pub mod prompt;
 pub mod quota;
 pub mod scanner;
+pub mod sys;
 pub mod util;
 
 pub use config::{CliOverrides, Config, Mode, ModelTier, TargetLanguage};

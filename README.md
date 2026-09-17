@@ -44,6 +44,8 @@ own architecture docs, produced by `agentwiki` itself
   efficient-tier agents fall back to the powerful model.
 - **Run lock** — a second concurrent run on the same repo fails fast
   (`.agentwiki/run.lock`, stale locks auto-reclaimed).
+- **`agentwiki doctor`** — health check: CLI availability, running/orphaned
+  agent processes, lock/quota/cache state, config sanity (`--fix` cleans up).
 
 ## Prerequisites
 
@@ -110,6 +112,22 @@ Useful flags:
 | `--skip-documentation` | stop after research |
 | `--force-regenerate` / `--no-cache` | cache controls |
 | `-v … -vvv` | log verbosity (`warn` default) |
+
+### `agentwiki doctor`
+
+Read-only environment check — run it before (or instead of debugging) a
+failed pipeline:
+
+```sh
+agentwiki doctor          # report only
+agentwiki doctor --fix    # also remove a stale run.lock + leftover tempfiles
+```
+
+It reports: agent CLIs on `PATH` (with versions, and which ones the
+configured models require), running/orphaned agent processes, the
+`.agentwiki/` state (run lock, quota usage, cache size, `research.json`,
+last call), and project/output writability. Exit code is `1` when any
+check fails, so it is usable in scripts.
 
 ## Configuration
 

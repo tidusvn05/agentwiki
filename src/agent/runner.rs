@@ -46,7 +46,9 @@ pub async fn run_spec(spec: &AgentSpec, pctx: &Arc<PipelineCtx>) -> Result<()> {
             if targets.is_empty() {
                 // E.g. domain_modules produced no domains — store an empty
                 // result so dependents see a valid (empty) context.
-                pctx.ctx.insert(spec.name, Value::Object(Default::default())).await;
+                pctx.ctx
+                    .insert(spec.name, Value::Object(Default::default()))
+                    .await;
                 return Ok(());
             }
             // FuturesUnordered, not JoinSet: these futures live inside this
@@ -89,13 +91,12 @@ async fn aggregate(
                         agent: t.key.clone(),
                         message: e.to_string(),
                     })?;
-                let dir = t.dir.ok_or_else(|| {
-                    Error::Pipeline("dir_summary target missing dir".to_string())
-                })?;
+                let dir = t
+                    .dir
+                    .ok_or_else(|| Error::Pipeline("dir_summary target missing dir".to_string()))?;
                 dossiers.push(materials::dossier_from(&dir, &resp));
             }
-            let v = serde_json::to_value(&dossiers)
-                .map_err(|e| Error::Pipeline(e.to_string()))?;
+            let v = serde_json::to_value(&dossiers).map_err(|e| Error::Pipeline(e.to_string()))?;
             pctx.ctx.insert(spec.name, v).await;
         }
         _ => {
@@ -106,10 +107,7 @@ async fn aggregate(
                 if spec.name == "key_module"
                     && let Some(obj) = v.as_object_mut()
                 {
-                    obj.insert(
-                        "domain_name".to_string(),
-                        Value::String(t.key.clone()),
-                    );
+                    obj.insert("domain_name".to_string(), Value::String(t.key.clone()));
                 }
                 map.insert(t.key, v);
             }
@@ -214,15 +212,32 @@ async fn run_instance_inner(
                         },
                     )?;
                     pctx.stats.lock().await.cli_call();
-                    record(pctx, key, kind, &model_str, prompt.len(), started.elapsed(), "ok")
-                        .await;
+                    record(
+                        pctx,
+                        key,
+                        kind,
+                        &model_str,
+                        prompt.len(),
+                        started.elapsed(),
+                        "ok",
+                    )
+                    .await;
                     return Ok(v);
                 }
                 Err(e) => ("validation", e),
             },
             Err(e) => ("error", e),
         };
-        record(pctx, key, kind, &model_str, prompt.len(), started.elapsed(), status).await;
+        record(
+            pctx,
+            key,
+            kind,
+            &model_str,
+            prompt.len(),
+            started.elapsed(),
+            status,
+        )
+        .await;
         pctx.stats.lock().await.cli_call();
         tracing::debug!(agent = key, attempt, error = %err, "attempt failed");
         feedback = format!(
@@ -280,10 +295,7 @@ async fn build_prompt(
     let mut vars: HashMap<&str, String> = HashMap::new();
     let materials = build_materials(spec, pctx).await;
     let cap = pctx.config.limits.materials_char_cap;
-    vars.insert(
-        "materials",
-        materials.chars().take(cap).collect::<String>(),
-    );
+    vars.insert("materials", materials.chars().take(cap).collect::<String>());
     vars.insert("custom", custom_block(spec, target, pctx).await);
     vars.insert(
         "language_instruction",

@@ -147,7 +147,10 @@ mod tests {
         });
         let parsed: RelationshipAnalysis = serde_json::from_value(payload).unwrap();
         assert_eq!(parsed.core_dependencies.len(), 1);
-        assert_eq!(parsed.core_dependencies[0].dependency_type.as_str(), "function_call");
+        assert_eq!(
+            parsed.core_dependencies[0].dependency_type.as_str(),
+            "function_call"
+        );
         assert_eq!(parsed.architecture_layers[0].level, 2);
         assert_eq!(parsed.key_insights.len(), 2);
     }

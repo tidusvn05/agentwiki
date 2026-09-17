@@ -71,8 +71,8 @@ impl ResearchContext {
     /// Load a previously saved context.
     pub async fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|e| Error::io(path, e))?;
-        let map: HashMap<String, serde_json::Value> = serde_json::from_str(&text)
-            .map_err(|e| Error::Parse {
+        let map: HashMap<String, serde_json::Value> =
+            serde_json::from_str(&text).map_err(|e| Error::Parse {
                 agent: "research.json".to_string(),
                 message: e.to_string(),
             })?;

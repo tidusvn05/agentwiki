@@ -16,7 +16,11 @@ impl DevinBackend {
     /// The full CLI invocation, kept in one place so flag changes are a
     /// single-point fix. The prompt travels via a temp file to stay well
     /// under argv limits.
-    fn build_cmd(prompt_path: &std::path::Path, model: Option<&str>, cwd: &std::path::Path) -> Command {
+    fn build_cmd(
+        prompt_path: &std::path::Path,
+        model: Option<&str>,
+        cwd: &std::path::Path,
+    ) -> Command {
         let mut cmd = Command::new("devin");
         cmd.arg("-p")
             .arg("--prompt-file")

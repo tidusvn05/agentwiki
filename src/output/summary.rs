@@ -67,8 +67,11 @@ pub async fn write_summary(
     let internal = &pctx.config.internal_path;
     std::fs::create_dir_all(internal).map_err(|e| Error::io(internal, e))?;
     let json_path = internal.join("summary.json");
-    std::fs::write(&json_path, serde_json::to_string_pretty(&json).unwrap_or_default())
-        .map_err(|e| Error::io(&json_path, e))?;
+    std::fs::write(
+        &json_path,
+        serde_json::to_string_pretty(&json).unwrap_or_default(),
+    )
+    .map_err(|e| Error::io(&json_path, e))?;
 
     // Human summary next to the docs.
     let mut md = String::from("# AgentWiki Run Summary\n\n");

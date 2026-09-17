@@ -1,8 +1,8 @@
 //! `AgentSpec` — one node in the task DAG.
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use schemars::JsonSchema;
 
 use crate::config::ModelTier;
 use crate::error::{Error, Result};
@@ -35,11 +35,9 @@ where
             for cand in cands {
                 match serde_json::from_value::<T>(cand.clone()) {
                     Ok(typed) => {
-                        return serde_json::to_value(&typed).map_err(|e| {
-                            Error::Validation {
-                                agent: agent.to_string(),
-                                message: e.to_string(),
-                            }
+                        return serde_json::to_value(&typed).map_err(|e| Error::Validation {
+                            agent: agent.to_string(),
+                            message: e.to_string(),
                         });
                     }
                     Err(e) => last = e.to_string(),
@@ -98,8 +96,8 @@ pub enum ExecKind {
 }
 
 /// Deterministic renderer signature: `(scan, config, dep_result)` → markdown.
-pub type DetFn = fn(&crate::scanner::ScanData, &crate::config::Config, &serde_json::Value)
-    -> Result<String>;
+pub type DetFn =
+    fn(&crate::scanner::ScanData, &crate::config::Config, &serde_json::Value) -> Result<String>;
 
 /// A node in the task DAG.
 #[derive(Clone)]

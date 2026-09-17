@@ -17,7 +17,11 @@ impl CodexBackend {
     /// The full CLI invocation, kept in one place so flag changes are a
     /// single-point fix. `-` reads the prompt from stdin; `-o` captures the
     /// agent's last message into a file.
-    fn build_cmd(out_path: &std::path::Path, model: Option<&str>, cwd: &std::path::Path) -> Command {
+    fn build_cmd(
+        out_path: &std::path::Path,
+        model: Option<&str>,
+        cwd: &std::path::Path,
+    ) -> Command {
         let mut cmd = Command::new("codex");
         cmd.arg("exec")
             .arg("--skip-git-repo-check")

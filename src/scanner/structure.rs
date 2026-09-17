@@ -42,7 +42,11 @@ pub struct ScanData {
 pub fn build_structure(root: &Path, files: Vec<FileEntry>) -> ScanData {
     let mut dirs: BTreeMap<PathBuf, Vec<FileEntry>> = BTreeMap::new();
     for f in &files {
-        let dir = f.rel_path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let dir = f
+            .rel_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
         dirs.entry(dir).or_default().push(f.clone());
     }
 
@@ -115,9 +119,7 @@ pub fn extract_docs(root: &Path, files: &[FileEntry]) -> Option<String> {
     std::fs::read_to_string(&entry.abs_path)
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            std::fs::read_to_string(root.join(&entry.rel_path)).ok()
-        })
+        .or_else(|| std::fs::read_to_string(root.join(&entry.rel_path)).ok())
 }
 
 /// Render the project as a tree (files included) for prompts.

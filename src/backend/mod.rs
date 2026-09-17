@@ -36,7 +36,14 @@ impl BackendKind {
     pub fn parse(model_string: &str) -> Result<(BackendKind, Option<String>)> {
         let s = model_string.trim();
         let (name, model) = match s.split_once(':') {
-            Some((b, m)) => (b, if m.is_empty() { None } else { Some(m.to_string()) }),
+            Some((b, m)) => (
+                b,
+                if m.is_empty() {
+                    None
+                } else {
+                    Some(m.to_string())
+                },
+            ),
             None => (s, None),
         };
         let kind = match name.to_lowercase().as_str() {
@@ -59,7 +66,7 @@ impl BackendKind {
             BackendKind::Devin => "devin",
             BackendKind::Claude => "claude",
             BackendKind::Codex => "codex",
-        BackendKind::Mock => "mock",
+            BackendKind::Mock => "mock",
         }
     }
 }

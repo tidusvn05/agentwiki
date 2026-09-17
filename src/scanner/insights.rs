@@ -80,9 +80,7 @@ fn rules_for(ext: &str) -> LangRules {
                 r"(?m)^\s*([A-Za-z0-9_]+)\s*=\s*lambda",
             ],
             types: &[r"(?m)^\s*class\s+([A-Za-z0-9_]+)"],
-            imports: &[
-                r"(?m)^\s*(?:from\s+([A-Za-z0-9_.]+)\s+)?import\s+([A-Za-z0-9_.*, ]+)",
-            ],
+            imports: &[r"(?m)^\s*(?:from\s+([A-Za-z0-9_.]+)\s+)?import\s+([A-Za-z0-9_.*, ]+)"],
             branches: &["if ", "elif ", "for ", "while ", "except", "with "],
         },
         "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" => LangRules {
@@ -100,23 +98,36 @@ fn rules_for(ext: &str) -> LangRules {
                 r#"(?m)import\s+.*?from\s+['"]([^'"]+)['"]"#,
                 r#"(?m)require\(\s*['"]([^'"]+)['"]\s*\)"#,
             ],
-            branches: &["if (", "if(", "for (", "for(", "while ", "case ", "catch", "?"],
+            branches: &[
+                "if (", "if(", "for (", "for(", "while ", "case ", "catch", "?",
+            ],
         },
         "go" => LangRules {
             funcs: &[r"(?m)^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z0-9_]+)"],
             types: &[r"(?m)^\s*type\s+([A-Za-z0-9_]+)\s+(?:struct|interface)"],
-            imports: &[r#"(?m)^\s*import\s+?(?:\(\s*)?["`]([^"`]+)["`]"#, r#"(?m)^\s*["`]([a-z0-9_./~-]+)["`]\s*$"#],
+            imports: &[
+                r#"(?m)^\s*import\s+?(?:\(\s*)?["`]([^"`]+)["`]"#,
+                r#"(?m)^\s*["`]([a-z0-9_./~-]+)["`]\s*$"#,
+            ],
             branches: &["if ", "for ", "switch ", "case ", "select "],
         },
         "java" | "kt" | "scala" => LangRules {
-            funcs: &[r"(?m)^\s*(?:public|private|protected|static|final|suspend|override|\s)*\s*(?:fun\s+)?([A-Za-z0-9_]+)\s*\("],
-            types: &[r"(?m)^\s*(?:public|private|abstract|final|data|sealed|\s)*\s*(?:class|interface|enum|object)\s+([A-Za-z0-9_]+)"],
+            funcs: &[
+                r"(?m)^\s*(?:public|private|protected|static|final|suspend|override|\s)*\s*(?:fun\s+)?([A-Za-z0-9_]+)\s*\(",
+            ],
+            types: &[
+                r"(?m)^\s*(?:public|private|abstract|final|data|sealed|\s)*\s*(?:class|interface|enum|object)\s+([A-Za-z0-9_]+)",
+            ],
             imports: &[r"(?m)^\s*import\s+([A-Za-z0-9_.*]+)"],
             branches: &["if (", "for (", "while (", "case ", "catch", "when ("],
         },
         "c" | "h" | "cpp" | "cc" | "hpp" | "cs" => LangRules {
-            funcs: &[r"(?m)^\s*(?:public|private|protected|static|virtual|async|internal|inline|\s)*\s*[A-Za-z0-9_<>\[\],:*& ]+\s+([A-Za-z0-9_]+)\s*\("],
-            types: &[r"(?m)^\s*(?:public|private|abstract|sealed|static|partial|\s)*\s*(?:class|struct|enum|interface|record)\s+([A-Za-z0-9_]+)"],
+            funcs: &[
+                r"(?m)^\s*(?:public|private|protected|static|virtual|async|internal|inline|\s)*\s*[A-Za-z0-9_<>\[\],:*& ]+\s+([A-Za-z0-9_]+)\s*\(",
+            ],
+            types: &[
+                r"(?m)^\s*(?:public|private|abstract|sealed|static|partial|\s)*\s*(?:class|struct|enum|interface|record)\s+([A-Za-z0-9_]+)",
+            ],
             imports: &[
                 r#"(?m)^\s*#include\s+[<"]([^>"]+)[>"]"#,
                 r"(?m)^\s*using\s+([A-Za-z0-9_.]+)",
@@ -245,6 +256,9 @@ pub fn extract(path: &Path, content: &str) -> FileStatics {
 /// Extract the first line containing byte offset `pos` (best effort).
 fn signature_line(content: &str, pos: usize) -> String {
     let start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let end = content[pos..].find('\n').map(|i| pos + i).unwrap_or(content.len());
+    let end = content[pos..]
+        .find('\n')
+        .map(|i| pos + i)
+        .unwrap_or(content.len());
     content[start..end].trim().chars().take(160).collect()
 }

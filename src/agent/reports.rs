@@ -9,9 +9,7 @@ pub use code::{
     CodePurpose, Dependency, DirectoryDossier, DirectoryPurpose, DirectorySummaryResponse,
     FileInsight, InterfaceInfo, ParameterInfo, classify_directory_purpose,
 };
-pub use relationship::{
-    ArchitectureLayer, CoreDependency, DependencyType, RelationshipAnalysis,
-};
+pub use relationship::{ArchitectureLayer, CoreDependency, DependencyType, RelationshipAnalysis};
 pub use research::{
     APIBoundary, BoundaryAnalysisReport, BusinessFlow, BusinessFlowStep, CLIArgument, CLIBoundary,
     CLIOption, DataFlow, DatabaseFunction, DatabaseOverviewReport, DatabaseProject, DatabaseTable,

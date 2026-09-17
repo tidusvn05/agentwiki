@@ -1,11 +1,10 @@
 //! Structured output types for research-phase agents.
 
-use serde::{Deserialize, Deserializer, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::lenient::{
-    any_to_string, de_bool, de_f64, de_opt_string, de_string, de_usize, de_vec_obj,
-    de_vec_string,
+    any_to_string, de_bool, de_f64, de_opt_string, de_string, de_usize, de_vec_obj, de_vec_string,
 };
 
 // ============================ system_context ============================
@@ -124,10 +123,14 @@ where
             if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&s) {
                 Ok(from_map(&map))
             } else {
-                Err(serde::de::Error::custom("system_boundary string is not JSON"))
+                Err(serde::de::Error::custom(
+                    "system_boundary string is not JSON",
+                ))
             }
         }
-        _ => Err(serde::de::Error::custom("system_boundary must be an object or string")),
+        _ => Err(serde::de::Error::custom(
+            "system_boundary must be an object or string",
+        )),
     }
 }
 
@@ -377,9 +380,9 @@ where
             for (idx, item) in items.into_iter().enumerate() {
                 match item {
                     serde_json::Value::Object(map) => {
-                        if let Ok(p) =
-                            serde_json::from_value::<BusinessFlowStep>(serde_json::Value::Object(map))
-                        {
+                        if let Ok(p) = serde_json::from_value::<BusinessFlowStep>(
+                            serde_json::Value::Object(map),
+                        ) {
                             out.push(p);
                         }
                     }

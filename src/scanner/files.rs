@@ -46,7 +46,9 @@ pub fn scan_files(root: &Path, cfg: &ScanConfig, output_path: &Path) -> Result<V
         None
     };
     if cfg.git_tracked_only && tracked.as_ref().is_some_and(|t| t.is_empty()) {
-        tracing::warn!("git_tracked_only is on but `git ls-files` returned nothing; scanning all files");
+        tracing::warn!(
+            "git_tracked_only is on but `git ls-files` returned nothing; scanning all files"
+        );
     }
 
     let excluded_file_patterns: Vec<Pattern> = cfg
@@ -55,7 +57,9 @@ pub fn scan_files(root: &Path, cfg: &ScanConfig, output_path: &Path) -> Result<V
         .filter_map(|p| Pattern::new(&p.to_lowercase()).ok())
         .collect();
 
-    let out_abs = output_path.canonicalize().unwrap_or_else(|_| output_path.to_path_buf());
+    let out_abs = output_path
+        .canonicalize()
+        .unwrap_or_else(|_| output_path.to_path_buf());
 
     let mut files = Vec::new();
     let walker = WalkDir::new(root)
@@ -71,7 +75,8 @@ pub fn scan_files(root: &Path, cfg: &ScanConfig, output_path: &Path) -> Result<V
         });
 
     for entry in walker {
-        let entry = entry.map_err(|e| Error::io(root.to_path_buf(), std::io::Error::other(e.to_string())))?;
+        let entry = entry
+            .map_err(|e| Error::io(root.to_path_buf(), std::io::Error::other(e.to_string())))?;
         if !entry.file_type().is_file() {
             continue;
         }
@@ -90,10 +95,16 @@ pub fn scan_files(root: &Path, cfg: &ScanConfig, output_path: &Path) -> Result<V
         if !cfg.include_hidden && lower_name.starts_with('.') {
             continue;
         }
-        if excluded_file_patterns.iter().any(|p| p.matches(&lower_name)) {
+        if excluded_file_patterns
+            .iter()
+            .any(|p| p.matches(&lower_name))
+        {
             continue;
         }
-        let ext = abs.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
+        let ext = abs
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase());
         if let Some(e) = &ext
             && BINARY_EXTENSIONS.contains(&e.as_str())
         {
@@ -142,7 +153,9 @@ fn is_excluded_dir(name: &str, cfg: &ScanConfig) -> bool {
     if !cfg.include_hidden && name.starts_with('.') {
         return true;
     }
-    cfg.excluded_dirs.iter().any(|d| d.eq_ignore_ascii_case(name))
+    cfg.excluded_dirs
+        .iter()
+        .any(|d| d.eq_ignore_ascii_case(name))
 }
 
 /// `git ls-files` → repo-relative paths. `None` when git is unavailable or
@@ -206,7 +219,10 @@ fn importance(file: &FileEntry) -> f64 {
             _ => {}
         }
     }
-    if path_str.contains("database") || path_str.contains("schema") || path_str.contains("migrations") {
+    if path_str.contains("database")
+        || path_str.contains("schema")
+        || path_str.contains("migrations")
+    {
         score += 0.15;
     }
     score.min(1.0)

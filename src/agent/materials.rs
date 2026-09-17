@@ -170,11 +170,7 @@ pub fn relationships_custom(dossiers: &[DirectoryDossier]) -> String {
 /// `{{custom}}` for `key_module@<domain>` — domain detail + filtered
 /// insights (files whose path intersects the domain's code_paths).
 pub fn key_module_custom(domain: &DomainModule, dossiers: &[DirectoryDossier]) -> String {
-    let submodule_names: Vec<String> = domain
-        .sub_modules
-        .iter()
-        .map(|s| s.name.clone())
-        .collect();
+    let submodule_names: Vec<String> = domain.sub_modules.iter().map(|s| s.name.clone()).collect();
     let mut s = format!(
         "**Domain**: {}\n**Type**: {}\n**Description**: {}\n**Code paths**: {}\n**Submodules**: {}\n\n",
         domain.name,

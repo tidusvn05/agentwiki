@@ -163,7 +163,9 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(CodePurpose::map_from_raw(&lenient::json_value_to_string(value)))
+    Ok(CodePurpose::map_from_raw(&lenient::json_value_to_string(
+        value,
+    )))
 }
 
 /// Parameter of an interface/function.
@@ -421,7 +423,10 @@ mod tests {
     fn code_purpose_maps_messy_labels() {
         assert_eq!(CodePurpose::map_from_raw("Entry"), CodePurpose::Entry);
         assert_eq!(CodePurpose::map_from_raw("entry point"), CodePurpose::Entry);
-        assert_eq!(CodePurpose::map_from_raw("SpecificFeature"), CodePurpose::SpecificFeature);
+        assert_eq!(
+            CodePurpose::map_from_raw("SpecificFeature"),
+            CodePurpose::SpecificFeature
+        );
         assert_eq!(CodePurpose::map_from_raw("???"), CodePurpose::Other);
     }
 

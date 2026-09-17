@@ -38,10 +38,26 @@ const EXPECTED: &[&str] = &[
 
 /// Valid mermaid diagram headers.
 const MERMAID_HEADERS: &[&str] = &[
-    "graph", "flowchart", "sequencediagram", "classdiagram", "statediagram",
-    "statediagram-v2", "erdiagram", "journey", "gantt", "pie", "mindmap",
-    "timeline", "gitgraph", "c4context", "c4container", "c4component",
-    "sankey-beta", "xychart-beta", "block-beta", "packet-beta",
+    "graph",
+    "flowchart",
+    "sequencediagram",
+    "classdiagram",
+    "statediagram",
+    "statediagram-v2",
+    "erdiagram",
+    "journey",
+    "gantt",
+    "pie",
+    "mindmap",
+    "timeline",
+    "gitgraph",
+    "c4context",
+    "c4container",
+    "c4component",
+    "sankey-beta",
+    "xychart-beta",
+    "block-beta",
+    "packet-beta",
 ];
 
 /// Verify the written doc tree. Never fails the pipeline — issues are
@@ -141,7 +157,8 @@ fn check_mermaid(text: &str) -> MermaidCheck {
                         "line {block_start}: unknown mermaid header `{header}`"
                     ));
                 } else if block_body.lines().count() < 2 {
-                    out.problems.push(format!("line {block_start}: empty diagram"));
+                    out.problems
+                        .push(format!("line {block_start}: empty diagram"));
                 }
                 continue;
             }

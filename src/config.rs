@@ -199,7 +199,9 @@ pub struct VerifyConfig {
 
 impl Default for VerifyConfig {
     fn default() -> Self {
-        Self { mermaid_fixer: true }
+        Self {
+            mermaid_fixer: true,
+        }
     }
 }
 
@@ -360,26 +362,27 @@ impl Config {
         let mut cfg = Config::default();
 
         // Global user config (base settings + shared profiles).
-        let global_toml = global_config_path()
-            .map(|p| load_toml(&p))
-            .transpose()?;
+        let global_toml = global_config_path().map(|p| load_toml(&p)).transpose()?;
         if let Some(t) = &global_toml {
             cfg.apply_toml(t);
         }
 
         // TOML layer — look next to the project first, then the cwd.
         let toml_path = config_path.map(|p| p.to_path_buf()).or_else(|| {
-            let project = cli.project_path.clone().unwrap_or_else(|| PathBuf::from("."));
+            let project = cli
+                .project_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("."));
             let candidate = project.join("agentwiki.toml");
             if candidate.is_file() {
                 Some(candidate)
             } else {
-                PathBuf::from("agentwiki.toml").is_file().then_some(PathBuf::from("agentwiki.toml"))
+                PathBuf::from("agentwiki.toml")
+                    .is_file()
+                    .then_some(PathBuf::from("agentwiki.toml"))
             }
         });
-        let project_toml = toml_path
-            .map(|p| load_toml(&p))
-            .transpose()?;
+        let project_toml = toml_path.map(|p| load_toml(&p)).transpose()?;
         if let Some(t) = &project_toml {
             cfg.apply_toml(t);
         }
@@ -405,7 +408,11 @@ impl Config {
                     avail.dedup();
                     Error::Config(format!(
                         "unknown profile '{name}' (available: {})",
-                        if avail.is_empty() { "none".to_string() } else { avail.join(", ") }
+                        if avail.is_empty() {
+                            "none".to_string()
+                        } else {
+                            avail.join(", ")
+                        }
                     ))
                 })?;
             cfg.apply_toml(profile);

@@ -49,7 +49,10 @@ const CANNED: &[(&str, &str)] = &[
         "workflow",
         "# System Workflow Analysis\n\n## 1. Main Workflow\nadd → validate → persist",
     ),
-    ("overview", "# System Context Overview\n\nfixture-app manages tasks."),
+    (
+        "overview",
+        "# System Context Overview\n\nfixture-app manages tasks.",
+    ),
     (
         "architecture_doc",
         "# System Architecture Documentation\n\n```mermaid\nflowchart TD\n  CLI-->API-->Storage\n```",
@@ -141,23 +144,17 @@ async fn second_run_is_fully_cached() {
     let tmp = tempfile::tempdir().unwrap();
     let mock = Arc::new(MockBackend::canned(CANNED));
 
-    let pctx = PipelineCtx::new(
-        test_config(&tmp, 100),
-        Some(mock_backends(mock.clone())),
-    )
-    .await
-    .unwrap();
+    let pctx = PipelineCtx::new(test_config(&tmp, 100), Some(mock_backends(mock.clone())))
+        .await
+        .unwrap();
     run(&pctx).await.unwrap();
     let calls_after_first = mock.calls.lock().unwrap().len();
     assert!(calls_after_first > 0);
 
     // Fresh context, same internal dir → every call served from cache.
-    let pctx2 = PipelineCtx::new(
-        test_config(&tmp, 100),
-        Some(mock_backends(mock.clone())),
-    )
-    .await
-    .unwrap();
+    let pctx2 = PipelineCtx::new(test_config(&tmp, 100), Some(mock_backends(mock.clone())))
+        .await
+        .unwrap();
     run(&pctx2).await.unwrap();
     assert_eq!(mock.calls.lock().unwrap().len(), calls_after_first);
 }
@@ -167,9 +164,7 @@ async fn cancel_aborts_mid_flight() {
     // Slow mock keeps dir_summary in flight; cancelling the token must
     // unwind the pipeline quickly (aborted tasks drop their futures).
     let tmp = tempfile::tempdir().unwrap();
-    let mock = Arc::new(
-        MockBackend::canned(CANNED).with_delay(Duration::from_secs(30)),
-    );
+    let mock = Arc::new(MockBackend::canned(CANNED).with_delay(Duration::from_secs(30)));
     let pctx = PipelineCtx::new(test_config(&tmp, 100), Some(mock_backends(mock)))
         .await
         .unwrap();
@@ -184,7 +179,10 @@ async fn cancel_aborts_mid_flight() {
         .expect("run did not finish within 5s of cancel")
         .expect("run task panicked")
         .unwrap_err();
-    assert!(matches!(err, Error::Cancelled), "expected Cancelled, got {err:?}");
+    assert!(
+        matches!(err, Error::Cancelled),
+        "expected Cancelled, got {err:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -192,15 +190,10 @@ async fn second_concurrent_run_refused() {
     // While one run holds .agentwiki/run.lock, another on the same
     // internal dir must fail fast with AlreadyRunning.
     let tmp = tempfile::tempdir().unwrap();
-    let mock = Arc::new(
-        MockBackend::canned(CANNED).with_delay(Duration::from_secs(5)),
-    );
-    let pctx = PipelineCtx::new(
-        test_config(&tmp, 100),
-        Some(mock_backends(mock.clone())),
-    )
-    .await
-    .unwrap();
+    let mock = Arc::new(MockBackend::canned(CANNED).with_delay(Duration::from_secs(5)));
+    let pctx = PipelineCtx::new(test_config(&tmp, 100), Some(mock_backends(mock.clone())))
+        .await
+        .unwrap();
     let pctx2 = pctx.clone();
     let first = tokio::spawn(async move { run(&pctx2).await });
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -234,7 +227,8 @@ async fn retry_on_garbage_then_success() {
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let c = counter.clone();
     let mock = Arc::new(MockBackend::new(move |req| {
-        if req.agent == "system_context" && c.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+        if req.agent == "system_context" && c.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+        {
             return Err("simulated garbage".to_string());
         }
         Ok(CANNED

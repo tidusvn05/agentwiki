@@ -147,7 +147,12 @@ pub fn compose_specs() -> Vec<AgentSpec> {
             prompt_tmpl: "editors/architecture_doc.md",
             schema: None,
             tier: Powerful,
-            deps: &["system_context", "domain_modules", "architecture", "workflow"],
+            deps: &[
+                "system_context",
+                "domain_modules",
+                "architecture",
+                "workflow",
+            ],
             fan_out: None,
             materials: &[],
             phase: Compose,
@@ -233,7 +238,11 @@ pub fn topo_levels(specs: &[AgentSpec]) -> Vec<Vec<usize>> {
             .filter(|&i| {
                 !done[i]
                     && specs[i].deps.iter().all(|d| {
-                        !names.contains(d) || specs.iter().position(|s| s.name == *d).is_some_and(|p| done[p])
+                        !names.contains(d)
+                            || specs
+                                .iter()
+                                .position(|s| s.name == *d)
+                                .is_some_and(|p| done[p])
                     })
             })
             .collect();

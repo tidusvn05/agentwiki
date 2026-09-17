@@ -4,8 +4,8 @@
 use std::fmt::Write as _;
 
 use crate::agent::reports::{
-    DatabaseOverviewReport, DatabaseTable, DatabaseView, StoredProcedure, DatabaseFunction,
-    DataFlow, DatabaseProject,
+    DataFlow, DatabaseFunction, DatabaseOverviewReport, DatabaseProject, DatabaseTable,
+    DatabaseView, StoredProcedure,
 };
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -22,12 +22,24 @@ pub fn database_doc(_scan: &ScanData, _config: &Config, dep: &serde_json::Value)
 
     let mut s = String::from("## Database Overview\n\n### Summary\n\n");
     s.push_str("| Metric | Count |\n|--------|-------|\n");
-    let _ = writeln!(s, "| Database Projects | {} |", report.database_projects.len());
+    let _ = writeln!(
+        s,
+        "| Database Projects | {} |",
+        report.database_projects.len()
+    );
     let _ = writeln!(s, "| Tables | {} |", report.tables.len());
     let _ = writeln!(s, "| Views | {} |", report.views.len());
-    let _ = writeln!(s, "| Stored Procedures | {} |", report.stored_procedures.len());
+    let _ = writeln!(
+        s,
+        "| Stored Procedures | {} |",
+        report.stored_procedures.len()
+    );
     let _ = writeln!(s, "| Functions | {} |", report.database_functions.len());
-    let _ = writeln!(s, "| Relationships | {} |", report.table_relationships.len());
+    let _ = writeln!(
+        s,
+        "| Relationships | {} |",
+        report.table_relationships.len()
+    );
     s.push('\n');
 
     if !report.database_projects.is_empty() {
@@ -215,6 +227,12 @@ fn flow(s: &mut String, f: &DataFlow) {
 /// ASCII-safe mermaid node id (schema/table names may contain dots).
 fn mermaid_id(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }

@@ -61,10 +61,11 @@ Billing-related env vars (`ANTHROPIC_*`, `OPENAI_*`, `DEVIN_API*`, …) are
 stripped from spawned children so calls stay on subscription auth, not API
 billing.
 
-The codex backend accepts an optional `@<effort>` suffix on the model —
-`codex:<model>@<effort>` sets `model_reasoning_effort` for that call
-(`low medium high xhigh max ultra`; bare `codex:<model>` inherits the CLI's
-configured default). A balanced pairing for doc generation:
+The codex and claude backends accept an optional `@<effort>` suffix on the
+model — `codex:<model>@<effort>` sets `model_reasoning_effort`
+(`low medium high xhigh max ultra`), `claude:<model>@<effort>` maps to
+`--effort` (`low medium high xhigh max`). A bare `<backend>:<model>` inherits
+the CLI's configured default. A balanced pairing for doc generation:
 
 ```toml
 [models]

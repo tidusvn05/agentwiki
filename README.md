@@ -103,9 +103,13 @@ cd agentwiki && cargo build --release
 
 ```sh
 cd your-repo
-agentwiki -p . -o docs/          # default: embedded mode, English docs
+agentwiki                            # auto-detect backend: devin → codex → claude
+agentwiki devin                      # or pick a backend explicitly
+agentwiki claude --target-language vi
+agentwiki codex --target-language ja
 ```
 
+Docs land in `./agentwiki.docs/`; cache and run state in `./.agentwiki/`.
 Watch the progress bar; interrupt any time — rerunning resumes from the
 cache for free.
 
@@ -172,9 +176,16 @@ excluded_files   = ["*.lock", ".env", "Cargo.lock", ...]
 skip_documentation = true
 ```
 
-`agentwiki` and `agentwiki default` are equivalent — `default` is a
-built-in profile, so it works even with no config file. Defining
-`[profiles.default]` yourself overrides the built-in.
+`agentwiki` and `agentwiki default` are equivalent — `default`, `devin`,
+`claude`, `codex` are built-in profiles, so they work even with no config
+file. A backend profile just sets `[models]` to that CLI's default pair
+(`claude` → `sonnet@low`/`sonnet@high`, `codex` → `gpt-5.6-sol@low`/`@high`,
+`devin` → `swe-2-medium`); defining `[profiles.<name>]` yourself overrides
+the built-in.
+
+When no model is configured anywhere — no `[models]` in config, profile, or
+`--model-*` flags — agentwiki picks the first agent CLI on `PATH`, in the
+order **devin → codex → claude**.
 
 ### `embedded` vs `agentic` mode
 

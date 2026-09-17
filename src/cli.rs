@@ -12,7 +12,8 @@ use crate::config::{CliOverrides, TargetLanguage};
 #[command(name = "agentwiki", version, about)]
 pub struct Args {
     /// Named profile from agentwiki.toml or ~/.config/agentwiki/config.toml
-    /// (`[profiles.<name>]` section).
+    /// (`[profiles.<name>]` section), or a backend name (`devin`, `claude`,
+    /// `codex`) to select that CLI's default models.
     #[arg(value_name = "PROFILE")]
     pub profile: Option<String>,
 

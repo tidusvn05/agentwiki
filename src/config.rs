@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::backend::BackendKind;
 use crate::error::{Error, Result};
 
 /// Context mode: embed code in prompts vs. let the agent read files itself.
@@ -79,9 +80,10 @@ pub struct ModelsConfig {
 
 impl Default for ModelsConfig {
     fn default() -> Self {
+        let (efficient, powerful) = BackendKind::Devin.default_models();
         Self {
-            efficient: "devin:swe-2-medium".to_string(),
-            powerful: "devin:swe-2-medium".to_string(),
+            efficient,
+            powerful,
         }
     }
 }
@@ -357,13 +359,17 @@ pub struct CliOverrides {
 
 impl Config {
     /// Merge order: defaults → global `~/.config/agentwiki/config.toml` →
-    /// project `agentwiki.toml` → selected profile → CLI overrides.
+    /// project `agentwiki.toml` → selected profile → CLI overrides →
+    /// PATH auto-detection for model tiers nobody set.
     pub fn load(cli: &CliOverrides, config_path: Option<&Path>) -> Result<Config> {
         let mut cfg = Config::default();
+        // [efficient, powerful] — tiers explicitly configured somewhere.
+        let mut models_set = [false; 2];
 
         // Global user config (base settings + shared profiles).
         let global_toml = global_config_path().map(|p| load_toml(&p)).transpose()?;
         if let Some(t) = &global_toml {
+            track_models(t, &mut models_set);
             cfg.apply_toml(t);
         }
 
@@ -384,20 +390,29 @@ impl Config {
         });
         let project_toml = toml_path.map(|p| load_toml(&p)).transpose()?;
         if let Some(t) = &project_toml {
+            track_models(t, &mut models_set);
             cfg.apply_toml(t);
         }
 
-        // Profile layer — project profiles shadow global ones. The name
-        // `default` is built in (a no-op over merged config) so
-        // `agentwiki default` works on a machine with no config files.
-        if let Some(name) = &cli.profile {
-            if let Some(profile) =
-                resolve_profile(name, project_toml.as_ref(), global_toml.as_ref())?
-            {
-                cfg.apply_toml(profile);
-            }
-            cfg.profile = Some(name.clone());
+        // Profile layer — no positional arg means `default`. Project
+        // profiles shadow global ones, and both shadow the built-ins:
+        // `default` (a no-op) and bare backend names (`agentwiki claude`
+        // selects that CLI's default model pair).
+        let name = cli.profile.as_deref().unwrap_or("default");
+        if let Some(profile) = find_profile(name, project_toml.as_ref(), global_toml.as_ref()) {
+            track_models(profile, &mut models_set);
+            cfg.apply_toml(profile);
+        } else if let Some(builtin) = builtin_profile(name) {
+            track_models(&builtin, &mut models_set);
+            cfg.apply_toml(&builtin);
+        } else {
+            return Err(unknown_profile(
+                name,
+                project_toml.as_ref(),
+                global_toml.as_ref(),
+            ));
         }
+        cfg.profile = Some(name.to_string());
 
         // CLI layer.
         if let Some(p) = &cli.project_path {
@@ -411,9 +426,11 @@ impl Config {
         }
         if let Some(m) = &cli.model_efficient {
             cfg.models.efficient = m.clone();
+            models_set[0] = true;
         }
         if let Some(m) = &cli.model_powerful {
             cfg.models.powerful = m.clone();
+            models_set[1] = true;
         }
         if let Some(n) = cli.max_parallels {
             cfg.max_parallels = n.max(1);
@@ -425,6 +442,21 @@ impl Config {
         cfg.force_regenerate |= cli.force_regenerate;
         cfg.skip_research |= cli.skip_research;
         cfg.skip_documentation |= cli.skip_documentation;
+
+        // Auto-detect: model tiers nobody configured fall back to the first
+        // agent CLI on PATH (devin → codex → claude). Nothing found keeps
+        // the built-in default — the spawn error at run time is clear enough.
+        if !(models_set[0] && models_set[1])
+            && let Some(kind) = BackendKind::detect()
+        {
+            let (e, p) = kind.default_models();
+            if !models_set[0] {
+                cfg.models.efficient = e;
+            }
+            if !models_set[1] {
+                cfg.models.powerful = p;
+            }
+        }
 
         // internal_path is relative to the project (per-repo cache/state).
         if cfg.internal_path.is_relative() {
@@ -557,23 +589,55 @@ fn global_config_path() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-/// Find profile `name` (project shadows global). `Ok(None)` for the
-/// built-in `default` profile; `Err` lists what is actually defined.
-fn resolve_profile<'a>(
+/// Record which model tiers a TOML layer sets explicitly — tiers left
+/// unset everywhere become eligible for PATH auto-detection.
+fn track_models(t: &TomlConfig, set: &mut [bool; 2]) {
+    if let Some(m) = &t.models {
+        set[0] |= m.efficient.is_some();
+        set[1] |= m.powerful.is_some();
+    }
+}
+
+/// Find profile `name` in TOML (project shadows global). `None` means the
+/// name may still resolve to a built-in — see [`builtin_profile`].
+fn find_profile<'a>(
     name: &str,
     project: Option<&'a TomlConfig>,
     global: Option<&'a TomlConfig>,
-) -> Result<Option<&'a TomlConfig>> {
-    let found = project
+) -> Option<&'a TomlConfig> {
+    project
         .and_then(|t| t.profiles.as_ref()?.get(name))
-        .or_else(|| global.and_then(|t| t.profiles.as_ref()?.get(name)));
-    if found.is_some() {
-        return Ok(found);
-    }
+        .or_else(|| global.and_then(|t| t.profiles.as_ref()?.get(name)))
+}
+
+/// Built-in profiles, shadowed by any TOML profile of the same name:
+/// `default` is a no-op layer; bare backend names (`devin`, `claude`,
+/// `codex`) select that CLI's default model pair.
+fn builtin_profile(name: &str) -> Option<TomlConfig> {
     if name == "default" {
-        return Ok(None);
+        return Some(TomlConfig::default());
     }
-    let mut avail: Vec<String> = vec!["default".to_string()];
+    let (kind, _) = BackendKind::parse(name).ok()?;
+    if kind == BackendKind::Mock {
+        return None;
+    }
+    let (efficient, powerful) = kind.default_models();
+    Some(TomlConfig {
+        models: Some(ModelsPartial {
+            efficient: Some(efficient),
+            powerful: Some(powerful),
+        }),
+        ..Default::default()
+    })
+}
+
+/// `unknown profile` error listing the built-ins plus every TOML-defined
+/// profile name.
+fn unknown_profile(name: &str, project: Option<&TomlConfig>, global: Option<&TomlConfig>) -> Error {
+    let mut avail: Vec<String> = ["default", "devin", "claude", "codex"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     for t in [project, global].into_iter().flatten() {
         if let Some(p) = &t.profiles {
             avail.extend(p.keys().cloned());
@@ -581,10 +645,10 @@ fn resolve_profile<'a>(
     }
     avail.sort();
     avail.dedup();
-    Err(Error::Config(format!(
+    Error::Config(format!(
         "unknown profile '{name}' (available: {})",
         avail.join(", ")
-    )))
+    ))
 }
 
 /// Read + parse a TOML config file.
@@ -608,6 +672,7 @@ max_parallels = 4
 target_language = "vi"
 [models]
 efficient = "devin:swe-2-low"
+powerful = "devin:swe-2-max"
 [limits]
 daily_cap = 5
 "#,
@@ -622,7 +687,20 @@ daily_cap = 5
         assert_eq!(cfg.models.efficient, "devin:swe-2-low");
         assert_eq!(cfg.limits.daily_cap, 5);
         assert_eq!(cfg.target_language, TargetLanguage::Vi);
-        assert_eq!(cfg.models.powerful, "devin:swe-2-medium"); // default
+        assert_eq!(cfg.models.powerful, "devin:swe-2-max");
+    }
+
+    #[test]
+    fn cli_model_flags_count_as_explicit() {
+        // Both tiers set on the CLI → PATH detection must not touch them.
+        let cli = CliOverrides {
+            model_efficient: Some("mock:a".to_string()),
+            model_powerful: Some("mock:b".to_string()),
+            ..Default::default()
+        };
+        let cfg = Config::load(&cli, None).unwrap();
+        assert_eq!(cfg.models.efficient, "mock:a");
+        assert_eq!(cfg.models.powerful, "mock:b");
     }
 
     #[test]
@@ -669,14 +747,18 @@ skip_documentation = true
         let msg = err.to_string();
         assert!(msg.contains("unknown profile 'nope'"), "{msg}");
         assert!(msg.contains("default"), "{msg}");
+        // Built-in backend names are advertised too.
+        for b in ["devin", "claude", "codex"] {
+            assert!(msg.contains(b), "{msg}");
+        }
     }
 
     #[test]
     fn default_profile_is_builtin() {
         // No [profiles.default] anywhere → the name still resolves to a
         // no-op layer so `agentwiki default` works on a fresh machine.
-        assert!(resolve_profile("default", None, None).unwrap().is_none());
-        assert!(resolve_profile("nope", None, None).is_err());
+        assert!(find_profile("default", None, None).is_none());
+        assert!(builtin_profile("nope").is_none());
         let defined = TomlConfig {
             profiles: Some(HashMap::from([(
                 "default".to_string(),
@@ -687,9 +769,37 @@ skip_documentation = true
             )])),
             ..Default::default()
         };
-        let p = resolve_profile("default", Some(&defined), None)
-            .unwrap()
-            .unwrap();
+        let p = find_profile("default", Some(&defined), None).unwrap();
         assert_eq!(p.max_parallels, Some(7)); // explicit config wins
+    }
+
+    #[test]
+    fn backend_names_are_builtin_profiles() {
+        let p = builtin_profile("claude").unwrap();
+        let m = p.models.unwrap();
+        assert_eq!(m.efficient.as_deref(), Some("claude:sonnet@low"));
+        assert_eq!(m.powerful.as_deref(), Some("claude:sonnet@high"));
+        assert!(builtin_profile("devin").is_some());
+        assert!(builtin_profile("codex").is_some());
+        // `mock`/`test` parse as a backend but are not profiles.
+        assert!(builtin_profile("mock").is_none());
+        assert!(builtin_profile("test").is_none());
+    }
+
+    #[test]
+    fn toml_profile_shadows_builtin_backend() {
+        // A TOML [profiles.claude] wins over the built-in `claude`.
+        let defined = TomlConfig {
+            profiles: Some(HashMap::from([(
+                "claude".to_string(),
+                TomlConfig {
+                    max_parallels: Some(3),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+        let p = find_profile("claude", Some(&defined), None).unwrap();
+        assert_eq!(p.max_parallels, Some(3));
     }
 }

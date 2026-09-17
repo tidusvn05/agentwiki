@@ -69,6 +69,26 @@ impl BackendKind {
             BackendKind::Mock => "mock",
         }
     }
+
+    /// Default `"<backend>:<model>"` strings for (efficient, powerful) —
+    /// used by the backend-name built-in profiles and PATH auto-detection.
+    pub fn default_models(&self) -> (String, String) {
+        let (e, p) = match self {
+            BackendKind::Devin => ("devin:swe-2-medium", "devin:swe-2-medium"),
+            BackendKind::Claude => ("claude:sonnet@low", "claude:sonnet@high"),
+            BackendKind::Codex => ("codex:gpt-5.6-sol@low", "codex:gpt-5.6-sol@high"),
+            BackendKind::Mock => ("mock:test", "mock:test"),
+        };
+        (e.to_string(), p.to_string())
+    }
+
+    /// First agent CLI found on `PATH`, in preference order
+    /// devin → codex → claude.
+    pub fn detect() -> Option<BackendKind> {
+        [BackendKind::Devin, BackendKind::Codex, BackendKind::Claude]
+            .into_iter()
+            .find(|k| crate::sys::find_on_path(k.as_str()).is_some())
+    }
 }
 
 /// Token accounting — `None` when the CLI does not expose usage.

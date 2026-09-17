@@ -12,7 +12,7 @@ use super::context::ResearchContext;
 use super::materials;
 use super::registry;
 use super::spec::{self, AgentSpec, ExecKind, FanTarget, Material};
-use crate::backend::{AgentRequest, BackendKind, tail};
+use crate::backend::{AgentRequest, BackendKind, TokenUsage, tail};
 use crate::cache::Cache;
 use crate::config::{Config, Mode, ModelTier};
 use crate::error::{Error, Result};
@@ -177,6 +177,7 @@ async fn run_instance_inner(
 
     let mut feedback = String::new();
     let mut last_err = Error::Pipeline("no attempts".to_string());
+    let json_schema = spec.schema.map(|s| (s.json_schema)());
     for attempt in 0..=pctx.config.limits.retry_attempts {
         if pctx.cancel.is_cancelled() {
             return Err(Error::Cancelled);
@@ -188,6 +189,7 @@ async fn run_instance_inner(
             model: model.clone(),
             timeout: pctx.config.call_timeout(),
             agent: key.to_string(),
+            json_schema: json_schema.clone(),
         };
         let started = Instant::now();
         // Biased: a response that just landed still gets cached even if a
@@ -197,7 +199,7 @@ async fn run_instance_inner(
             r = backend.run(req) => r,
             () = pctx.cancel.cancelled() => return Err(Error::Cancelled),
         };
-        let (status, err) = match response {
+        let (status, err, usage) = match response {
             Ok(r) => match parse_output(spec, &r.text, key) {
                 Ok(v) => {
                     pctx.cache.put(
@@ -217,25 +219,31 @@ async fn run_instance_inner(
                         key,
                         kind,
                         &model_str,
-                        prompt.len(),
-                        started.elapsed(),
-                        "ok",
+                        CallMetrics {
+                            prompt_chars: prompt.len(),
+                            secs: started.elapsed(),
+                            status: "ok",
+                            usage: r.usage,
+                        },
                     )
                     .await;
                     return Ok(v);
                 }
-                Err(e) => ("validation", e),
+                Err(e) => ("validation", e, r.usage),
             },
-            Err(e) => ("error", e),
+            Err(e) => ("error", e, None),
         };
         record(
             pctx,
             key,
             kind,
             &model_str,
-            prompt.len(),
-            started.elapsed(),
-            status,
+            CallMetrics {
+                prompt_chars: prompt.len(),
+                secs: started.elapsed(),
+                status,
+                usage,
+            },
         )
         .await;
         pctx.stats.lock().await.cli_call();
@@ -265,6 +273,7 @@ async fn run_instance_inner(
         model: fm,
         timeout: pctx.config.call_timeout(),
         agent: key.to_string(),
+        json_schema: json_schema.clone(),
     };
     if let Ok(r) = fb.run(req).await
         && let Ok(v) = parse_output(spec, &r.text, key)
@@ -477,25 +486,27 @@ fn agentic_note(config: &Config) -> String {
     }
 }
 
-/// Append to `calls.jsonl` (best-effort).
-async fn record(
-    pctx: &PipelineCtx,
-    agent: &str,
-    kind: BackendKind,
-    model: &str,
+/// Metrics for one `calls.jsonl` record.
+struct CallMetrics {
     prompt_chars: usize,
     secs: std::time::Duration,
-    status: &str,
-) {
+    status: &'static str,
+    usage: Option<TokenUsage>,
+}
+
+/// Append to `calls.jsonl` (best-effort).
+async fn record(pctx: &PipelineCtx, agent: &str, kind: BackendKind, model: &str, m: CallMetrics) {
     pctx.quota
         .record(CallRecord {
             ts: crate::quota::now_rfc3339(),
             agent,
             backend: kind.as_str(),
             model,
-            prompt_chars,
-            secs: secs.as_secs_f64(),
-            status,
+            prompt_chars: m.prompt_chars,
+            secs: m.secs.as_secs_f64(),
+            status: m.status,
+            input_tokens: m.usage.as_ref().map(|u| u.input),
+            output_tokens: m.usage.as_ref().map(|u| u.output),
         })
         .await;
 }

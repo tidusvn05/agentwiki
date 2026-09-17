@@ -55,11 +55,22 @@ At least one agent CLI, installed and authenticated:
 |---|---|---|
 | `devin` | [Devin CLI](https://devin.ai) | `devin:swe-2-medium` (default) |
 | `claude` | Claude Code CLI | `claude:sonnet` |
-| `codex` | Codex CLI | `codex:gpt-5-codex` |
+| `codex` | Codex CLI | `codex:gpt-5.6-sol@high` |
 
 Billing-related env vars (`ANTHROPIC_*`, `OPENAI_*`, `DEVIN_API*`, …) are
 stripped from spawned children so calls stay on subscription auth, not API
 billing.
+
+The codex backend accepts an optional `@<effort>` suffix on the model —
+`codex:<model>@<effort>` sets `model_reasoning_effort` for that call
+(`low medium high xhigh max ultra`; bare `codex:<model>` inherits the CLI's
+configured default). A balanced pairing for doc generation:
+
+```toml
+[models]
+efficient = "codex:gpt-5.6-sol@low"    # fan-out summaries + JSON extraction
+powerful  = "codex:gpt-5.6-sol@high"   # architecture/workflow/deep-dive writing
+```
 
 ## Install
 

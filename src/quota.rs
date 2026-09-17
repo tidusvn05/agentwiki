@@ -32,6 +32,12 @@ pub struct CallRecord<'a> {
     pub secs: f64,
     /// ok | error | timeout.
     pub status: &'a str,
+    /// Input tokens, when the backend reports usage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    /// Output tokens, when the backend reports usage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
 }
 
 /// Enforces `daily_cap` and appends to `calls.jsonl`.

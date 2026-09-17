@@ -92,6 +92,9 @@ pub struct AgentRequest {
     pub timeout: Duration,
     /// Agent name, for span/log correlation.
     pub agent: String,
+    /// JSON Schema for structured agents; backends that support response
+    /// schemas (codex `--output-schema`) enforce it, others ignore it.
+    pub json_schema: Option<serde_json::Value>,
 }
 
 /// What the CLI returned.

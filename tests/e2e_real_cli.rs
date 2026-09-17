@@ -71,5 +71,5 @@ async fn codex_end_to_end() {
     if !enabled() {
         return;
     }
-    run_e2e("codex", BackendKind::Codex).await;
+    run_e2e("codex:gpt-5.6-sol@low", BackendKind::Codex).await;
 }

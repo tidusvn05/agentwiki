@@ -387,35 +387,15 @@ impl Config {
             cfg.apply_toml(t);
         }
 
-        // Profile layer — project profiles shadow global ones.
+        // Profile layer — project profiles shadow global ones. The name
+        // `default` is built in (a no-op over merged config) so
+        // `agentwiki default` works on a machine with no config files.
         if let Some(name) = &cli.profile {
-            let profile = project_toml
-                .as_ref()
-                .and_then(|t| t.profiles.as_ref()?.get(name))
-                .or_else(|| {
-                    global_toml
-                        .as_ref()
-                        .and_then(|t| t.profiles.as_ref()?.get(name))
-                })
-                .ok_or_else(|| {
-                    let mut avail: Vec<String> = Vec::new();
-                    for t in [&project_toml, &global_toml].into_iter().flatten() {
-                        if let Some(p) = &t.profiles {
-                            avail.extend(p.keys().cloned());
-                        }
-                    }
-                    avail.sort();
-                    avail.dedup();
-                    Error::Config(format!(
-                        "unknown profile '{name}' (available: {})",
-                        if avail.is_empty() {
-                            "none".to_string()
-                        } else {
-                            avail.join(", ")
-                        }
-                    ))
-                })?;
-            cfg.apply_toml(profile);
+            if let Some(profile) =
+                resolve_profile(name, project_toml.as_ref(), global_toml.as_ref())?
+            {
+                cfg.apply_toml(profile);
+            }
             cfg.profile = Some(name.clone());
         }
 
@@ -577,6 +557,36 @@ fn global_config_path() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
+/// Find profile `name` (project shadows global). `Ok(None)` for the
+/// built-in `default` profile; `Err` lists what is actually defined.
+fn resolve_profile<'a>(
+    name: &str,
+    project: Option<&'a TomlConfig>,
+    global: Option<&'a TomlConfig>,
+) -> Result<Option<&'a TomlConfig>> {
+    let found = project
+        .and_then(|t| t.profiles.as_ref()?.get(name))
+        .or_else(|| global.and_then(|t| t.profiles.as_ref()?.get(name)));
+    if found.is_some() {
+        return Ok(found);
+    }
+    if name == "default" {
+        return Ok(None);
+    }
+    let mut avail: Vec<String> = vec!["default".to_string()];
+    for t in [project, global].into_iter().flatten() {
+        if let Some(p) = &t.profiles {
+            avail.extend(p.keys().cloned());
+        }
+    }
+    avail.sort();
+    avail.dedup();
+    Err(Error::Config(format!(
+        "unknown profile '{name}' (available: {})",
+        avail.join(", ")
+    )))
+}
+
 /// Read + parse a TOML config file.
 fn load_toml(path: &Path) -> Result<TomlConfig> {
     let text = std::fs::read_to_string(path).map_err(|e| Error::io(path, e))?;
@@ -659,5 +669,27 @@ skip_documentation = true
         let msg = err.to_string();
         assert!(msg.contains("unknown profile 'nope'"), "{msg}");
         assert!(msg.contains("default"), "{msg}");
+    }
+
+    #[test]
+    fn default_profile_is_builtin() {
+        // No [profiles.default] anywhere → the name still resolves to a
+        // no-op layer so `agentwiki default` works on a fresh machine.
+        assert!(resolve_profile("default", None, None).unwrap().is_none());
+        assert!(resolve_profile("nope", None, None).is_err());
+        let defined = TomlConfig {
+            profiles: Some(HashMap::from([(
+                "default".to_string(),
+                TomlConfig {
+                    max_parallels: Some(7),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+        let p = resolve_profile("default", Some(&defined), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(p.max_parallels, Some(7)); // explicit config wins
     }
 }

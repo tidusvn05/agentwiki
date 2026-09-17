@@ -160,6 +160,25 @@ excluded_files   = ["*.lock", ".env", "Cargo.lock", ...]
 skip_documentation = true
 ```
 
+`agentwiki` and `agentwiki default` are equivalent — `default` is a
+built-in profile, so it works even with no config file. Defining
+`[profiles.default]` yourself overrides the built-in.
+
+### `embedded` vs `agentic` mode
+
+| | `embedded` (default) | `agentic` |
+|---|---|---|
+| Context | scanner embeds code + materials into the prompt | agent reads the repo itself with its own tools |
+| Agent cwd | empty dir (`.agentwiki/empty-cwd`) — repo invisible | the project root |
+| Prompt size | capped by `limits.materials_char_cap` (192 KB) | no cap — agent explores as needed |
+| Speed/cost | predictable, faster | slower — agents spend turns reading files |
+| Requirements | any CLI | CLI must have working file tools (`devin`, `claude`, `codex` all do) |
+
+Use **embedded** for routine runs — deterministic context, no wandering.
+Use **agentic** (`--agentic` or `mode = "agentic"`) for large or tangled
+codebases where the embedded excerpts feel too shallow and the agent
+should chase references itself.
+
 ## How it works
 
 `Preprocess → Research → Compose → Write → Verify`

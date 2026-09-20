@@ -1,13 +1,36 @@
 # agentwiki
 
-Generate **C4-style architecture documentation** for any repository using an
-already-authenticated agent CLI (`devin`, `claude`, `codex`) as the LLM —
-no metered API key required.
+**Architecture docs that stay honest.** agentwiki generates C4-style
+architecture documentation for any repository — then double-checks the
+generated dependency claims against the real import graph, so drift
+between docs and code gets caught instead of shipped.
 
-AgentWiki is a CLI-agent-native rewrite of
-[deepwiki-rs](https://github.com/sopaco/deepwiki-rs): instead of an
-OpenAI-compatible HTTP API, every pipeline agent is a subprocess call to a
-local agent CLI. If you can run the CLI, you can run agentwiki.
+Every LLM call is a subprocess to an agent CLI you already have
+(`devin`, `claude`, `codex`) — subscription auth, no metered API key,
+no extra infra. A CLI-agent-native rewrite of
+[deepwiki-rs](https://github.com/sopaco/deepwiki-rs).
+
+```sh
+cd your-repo
+agentwiki              # generate the doc set  → ./agentwiki.docs/
+agentwiki drift        # verify claims vs code → .agentwiki/drift.json
+```
+
+## What it is for
+
+- **Onboarding & handover** — hand contributors a generated C4-style doc
+  set instead of a wiki nobody maintains.
+- **Docs freshness in CI** — commit the docs, then gate PRs with
+  `agentwiki drift --strict`: new `phantom`/`reversed` claims fail the
+  build, everything else stays a warning.
+- **Architecture review** — `undocumented` findings surface real import
+  edges the docs never mention; `phantom`/`reversed` expose claims the
+  code contradicts.
+- **Any stack, any language of prose** — static import extraction for
+  Rust, Python, and JS/TS; docs render in `en zh ja ko de fr ru vi`.
+- **Zero platform setup** — the agent CLI on your `PATH` *is* the
+  backend; billing env vars are stripped so calls stay on subscription
+  auth.
 
 ## What it produces
 
@@ -19,33 +42,79 @@ agentwiki.docs/
 ├── 4.Deep-Exploration/<Domain>.md   # one doc per detected domain module
 ├── 5.Boundary-Interfaces.md
 ├── 6.Database-Overview.md
+├── agentwiki.claims.json            # the dependency claims, for drift/CI
 └── __AgentWiki_Summary__.md         # timings, calls, cache hits
 ```
 
-A real self-generated example lives in [`docs/en/`](docs/en/) — agentwiki's
-own architecture docs, produced by `agentwiki` itself
-([`docs/vi/`](docs/vi/) for the Vietnamese version).
+State, cache, and audit logs live in `.agentwiki/` (gitignored).
 
 ## Features
 
-- **DAG pipeline** — research agents (dir summaries, system context, domain
-  modules, relationships, boundary, database) feed compose agents that write
-  the docs.
-- **Content-hash cache** — each call is cached by `sha256(prompt‖model‖backend)`
-  under `.agentwiki/cache/`. Interrupt any time; a rerun reuses everything
-  that already succeeded.
-- **Safe to interrupt** — `Ctrl-C` cancels cooperatively, kills in-flight CLI
-  children, and exits `130`. A second `Ctrl-C` force-quits.
-- **Live progress** — spinner bar shows `[done/total]` and which agents are
-  running right now (auto-hidden when output is piped).
+### Documentation pipeline
+
+- **DAG pipeline** — research agents (dir summaries, system context,
+  domain modules, relationships, boundary, database) feed compose agents
+  that write the docs.
+- **Two context modes** — `embedded` (deterministic excerpts in the
+  prompt) vs `agentic` (the agent explores the repo itself). See
+  [below](#embedded-vs-agentic-mode).
+- **Multilingual output** — `--target-language en zh ja ko de fr ru vi`.
+
+### Correctness guard — `agentwiki drift`
+
+- **Claims vs reality** — compares `relationships.core_dependencies`
+  against a statically-extracted import graph (Rust / Python / JS-TS):
+  `confirmed`, `structural`, `unverifiable`, `undocumented`, `reversed`,
+  `phantom`.
+- **Deterministic + read-only** — no LLM calls; the only write is
+  `<internal>/drift.json`. Exit codes are CI-friendly (`0` warn-only,
+  `1` strict gate, `2` claims missing).
+- **Noise-filtered** — named filters (hub fan-in, thin edges, containment,
+  test-only evidence…) keep the report small; a committed baseline turns
+  `--strict` into "fail only on *new* problems".
+- **Coverage metric** — the `coverage:` line separates "docs match the
+  code" from "couldn't check", so uncheckable `data_flow` claims don't
+  inflate the score.
+
+### Operations
+
+- **Content-hash cache** — each call is cached by
+  `sha256(prompt‖model‖backend)` under `.agentwiki/cache/`. Interrupt any
+  time; a rerun reuses everything that already succeeded.
+- **Safe to interrupt** — `Ctrl-C` cancels cooperatively, kills in-flight
+  CLI children, exits `130`. A second `Ctrl-C` force-quits.
+- **Live progress** — spinner bar shows `[done/total]` and running agents
+  (auto-hidden when output is piped).
 - **Quota + audit** — daily call cap (`300`/day default) and a
   `.agentwiki/calls.jsonl` audit log.
-- **Retries + fallback** — schema validation failures retry with feedback;
-  efficient-tier agents fall back to the powerful model.
+- **Retries + fallback** — schema validation failures retry with
+  feedback; efficient-tier agents fall back to the powerful model.
 - **Run lock** — a second concurrent run on the same repo fails fast
   (`.agentwiki/run.lock`, stale locks auto-reclaimed).
-- **`agentwiki doctor`** — health check: CLI availability, running/orphaned
-  agent processes, lock/quota/cache state, config sanity (`--fix` cleans up).
+- **`agentwiki doctor`** — health check: CLI availability, agent
+  processes, lock/quota/cache state, config sanity (`--fix` cleans up).
+
+## Examples
+
+agentwiki documents itself — the committed
+[`docs/en/`](docs/en/) ([`docs/vi/`](docs/vi/) in Vietnamese) is real
+pipeline output, and [`docs/agentwiki.claims.json`](docs/agentwiki.claims.json)
+carries the claims so the docs are verifiable even on a bare checkout:
+
+```text
+$ agentwiki drift -o docs -v
+claims: docs/agentwiki.claims.json (13 edges)
+coverage: 8/13 claims checked (62%) — 5 unverifiable
+  ok   8 confirmed (3 containment, 5 direct_evidence)
+result: 0 finding(s) would fail under --strict
+```
+
+Two more verified walkthroughs live under [`examples/`](./examples/README.md):
+
+| Example | Language | Story |
+|---|---|---|
+| [`taskman-py`](./examples/taskman-py) | Python | Real `devin` claims include a genuine hallucinated edge — drift flags it `phantom`. A curated claims file exercises all six finding classes. |
+| [`notes-api-ts`](./examples/notes-api-ts) | TypeScript | The full generated doc set + claims, 14/15 confirmed, 93% coverage — what a green project looks like. |
 
 ## Prerequisites
 
@@ -64,8 +133,9 @@ billing.
 The codex and claude backends accept an optional `@<effort>` suffix on the
 model — `codex:<model>@<effort>` sets `model_reasoning_effort`
 (`low medium high xhigh max ultra`), `claude:<model>@<effort>` maps to
-`--effort` (`low medium high xhigh max`). A bare `<backend>:<model>` inherits
-the CLI's configured default. A balanced pairing for doc generation:
+`--effort` (`low medium high xhigh max`). A bare `<backend>:<model>`
+inherits the CLI's configured default. A balanced pairing for doc
+generation:
 
 ```toml
 [models]
@@ -190,10 +260,6 @@ Suggested CI rollout:
 # 3. gate — fail only on NEW phantom/reversed findings
 - run: agentwiki drift --strict
 ```
-
-Two verified walkthroughs — a Python project whose real `devin` claims
-contain a genuine hallucinated edge, and a TypeScript project with the
-full generated doc set — live under [`examples/`](./examples/README.md).
 
 ## Configuration
 

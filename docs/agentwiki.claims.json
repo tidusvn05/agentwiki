@@ -1,0 +1,169 @@
+{
+  "relationships": {
+    "architecture_layers": [
+      {
+        "components": [
+          "src (config.rs, cli.rs, error.rs, cache, quota)",
+          "Cargo.toml"
+        ],
+        "level": 1,
+        "name": "Nền tảng & cấu hình"
+      },
+      {
+        "components": [
+          "src/scanner"
+        ],
+        "level": 2,
+        "name": "Quét & trích xuất xác định"
+      },
+      {
+        "components": [
+          "src/backend"
+        ],
+        "level": 3,
+        "name": "Trừu tượng backend LLM"
+      },
+      {
+        "components": [
+          "src/agent",
+          "src/agent/reports"
+        ],
+        "level": 4,
+        "name": "Điều phối agentic & mô hình dữ liệu"
+      },
+      {
+        "components": [
+          "src/pipeline"
+        ],
+        "level": 5,
+        "name": "Điều phối pipeline"
+      },
+      {
+        "components": [
+          "src/output"
+        ],
+        "level": 6,
+        "name": "Xuất tài liệu"
+      },
+      {
+        "components": [
+          "prompts",
+          "prompts/editors"
+        ],
+        "level": 7,
+        "name": "Cấu hình prompt"
+      },
+      {
+        "components": [
+          "tests",
+          "tests/fixture-app",
+          "tests/fixture-app/src",
+          "tests/fixture-app/db"
+        ],
+        "level": 8,
+        "name": "Kiểm thử & fixture"
+      }
+    ],
+    "core_dependencies": [
+      {
+        "dependency_type": "Module",
+        "description": "main.rs/lib.rs khởi tạo cấu hình và điều phối toàn bộ pipeline nhiều giai đoạn.",
+        "from": "src",
+        "importance": 5,
+        "to": "src/pipeline"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "PipelineCtx thực thi các agent spec theo tầng DAG qua runner/registry.",
+        "from": "src/pipeline",
+        "importance": 5,
+        "to": "src/agent"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "Phase 0 quét repository xác định trước khi gọi agent.",
+        "from": "src/pipeline",
+        "importance": 4,
+        "to": "src/scanner"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "Giai đoạn Compose/Write/Verify gọi renderer, writer và verify.",
+        "from": "src/pipeline",
+        "importance": 4,
+        "to": "src/output"
+      },
+      {
+        "dependency_type": "Module",
+        "description": "runner gọi LLM thông qua trait AgentBackend (devin/claude/codex/mock).",
+        "from": "src/agent",
+        "importance": 5,
+        "to": "src/backend"
+      },
+      {
+        "dependency_type": "Composition",
+        "description": "Kết quả agent được validate thành các kiểu report có JSON schema.",
+        "from": "src/agent",
+        "importance": 4,
+        "to": "src/agent/reports"
+      },
+      {
+        "dependency_type": "DataFlow",
+        "description": "materials.rs nạp và định dạng prompt templates cho các tác vụ research/compose.",
+        "from": "src/agent",
+        "importance": 3,
+        "to": "prompts"
+      },
+      {
+        "dependency_type": "DataFlow",
+        "description": "Report có cấu trúc là đầu vào cho renderer Markdown (boundary, database, summary).",
+        "from": "src/agent/reports",
+        "importance": 4,
+        "to": "src/output"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Backend dùng config (model_for, call_timeout) và error types từ tầng gốc.",
+        "from": "src/backend",
+        "importance": 3,
+        "to": "src"
+      },
+      {
+        "dependency_type": "DataFlow",
+        "description": "Cây thư mục, file insights và metrics làm materials cho prompt agent.",
+        "from": "src/scanner",
+        "importance": 4,
+        "to": "src/agent"
+      },
+      {
+        "dependency_type": "Module",
+        "description": "Test tích hợp dùng MockBackend và fixture-app để chạy pipeline offline.",
+        "from": "tests",
+        "importance": 3,
+        "to": "src/backend"
+      },
+      {
+        "dependency_type": "DataFlow",
+        "description": "fixture-app là đầu vào mẫu cho kiểm thử end-to-end và offline.",
+        "from": "tests",
+        "importance": 2,
+        "to": "tests/fixture-app"
+      },
+      {
+        "dependency_type": "Module",
+        "description": "Editor templates tái sử dụng quy tắc Mermaid chung của hệ thống prompt.",
+        "from": "prompts/editors",
+        "importance": 2,
+        "to": "prompts"
+      }
+    ],
+    "key_insights": [
+      "Kiến trúc phân tầng sạch theo luồng pipeline: scanner (xác định) → agent/backend (LLM) → output (render/ghi/verify), không có chu trình phụ thuộc rõ ràng giữa các thư mục.",
+      "src/pipeline và src/agent là hai lõi trung tâm (importance cao nhất): pipeline điều phối DAG tầng, agent quyết định chạy gì với dữ liệu nào — thay đổi ở đây ảnh hưởng toàn hệ thống.",
+      "Trait AgentBackend trong src/backend là điểm tích hợp then chốt: cho phép thay thế devin/claude/codex và MockBackend mà không đổi logic trên, giúp test offline tách biệt.",
+      "src/agent/reports đóng vai trò lớp chống phá vỡ (anti-corruption) với lenient deserializer, cách ly JSON lỗi của LLM khỏi tầng output thuần Rust.",
+      "prompts/ là phụ thuộc dạng dữ liệu (template) chứ không phải code — chất lượng tài liệu phụ thuộc vào nó nhưng nó nằm ngoài đồ thị phụ thuộc biên dịch, dễ bị bỏ sót khi refactor.",
+      "Rủi ro tiềm ẩn: pipeline/mod.rs gom nhiều trách nhiệm (ctx, stats, lock, orchestration) trong một file — điểm tích tụ độ phức tạp khi mở rộng thêm giai đoạn."
+    ]
+  }
+}

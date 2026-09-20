@@ -42,6 +42,16 @@ pub struct DriftArgs {
     #[arg(long, value_name = "PATH")]
     pub claims: Option<PathBuf>,
 
+    /// Baseline file override (default: `[drift].baseline_path`, else
+    /// `<project>/.agentwiki-drift-baseline.json`).
+    #[arg(long, value_name = "PATH")]
+    pub baseline: Option<PathBuf>,
+
+    /// Max transitive hops for `confirmed` evidence (default:
+    /// `[drift].max_transitive_depth` = 3).
+    #[arg(long, value_name = "N")]
+    pub max_depth: Option<usize>,
+
     /// Fail (exit 1) on phantom/reversed findings not in the baseline.
     #[arg(long)]
     pub strict: bool,
@@ -90,7 +100,10 @@ pub async fn run(
             return 2;
         }
     };
-    let dcfg = cfg.drift.clone();
+    let mut dcfg = cfg.drift.clone();
+    if let Some(d) = args.max_depth {
+        dcfg.max_transitive_depth = d.max(1);
+    }
 
     // --export-claims: standalone action, needs no claims file.
     if let Some(dest) = &args.export_claims {
@@ -143,7 +156,11 @@ pub async fn run(
     let out = analyze(&dcfg, &root, &scan, &claims, &test_globs);
     let mut report = build_report(&claims_path, &claims, out);
 
-    let baseline_path = dcfg.baseline_path(&root);
+    let baseline_path = match &args.baseline {
+        Some(p) if p.is_absolute() => p.clone(),
+        Some(p) => root.join(p),
+        None => dcfg.baseline_path(&root),
+    };
     match baseline::Baseline::load(&baseline_path) {
         Ok(Some(b)) => {
             let mut known = 0;
@@ -170,7 +187,12 @@ pub async fn run(
     }
 
     if args.update_baseline {
-        let ids: BTreeSet<String> = report.findings.iter().map(|f| f.id.clone()).collect();
+        let ids: BTreeSet<String> = report
+            .findings
+            .iter()
+            .filter(|f| f.class.is_gating())
+            .map(|f| f.id.clone())
+            .collect();
         match baseline::Baseline::from_ids(ids).save(&baseline_path) {
             Ok(()) => eprintln!("baseline written to {}", baseline_path.display()),
             Err(e) => tracing::warn!("failed to write baseline: {e}"),
@@ -182,6 +204,10 @@ pub async fn run(
     }
 
     // Machine-readable report: `<internal>/drift.json` (non-fatal).
+    // `.agentwiki/` may not exist yet — create it like the other writers.
+    if let Err(e) = std::fs::create_dir_all(&cfg.internal_path) {
+        tracing::warn!("cannot create {}: {e}", cfg.internal_path.display());
+    }
     let out_json = cfg.internal_path.join("drift.json");
     match serde_json::to_string_pretty(&report) {
         Ok(body) => {

@@ -59,7 +59,7 @@ impl Default for DriftConfig {
             min_language_coverage: 0.8,
             max_unresolved_ratio: 0.25,
             hub_in_degree_ratio: 0.5,
-            hub_min_nodes: 5,
+            hub_min_nodes: 10,
             min_undocumented_imports: 3,
             max_undocumented_reported: 20,
             ignore_nodes: Vec::new(),
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(c.min_undocumented_imports, 1);
         assert_eq!(c.ignore_nodes, ["src/generated"]);
         // untouched fields keep defaults
-        assert_eq!(c.hub_min_nodes, 5);
+        assert_eq!(c.hub_min_nodes, 10);
         assert!(c.exclude_cfg_test);
     }
 

@@ -39,6 +39,9 @@ impl Baseline {
 
     /// Write sorted ids atomically.
     pub fn save(&self, path: &Path) -> Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+        }
         let body = serde_json::to_string_pretty(self)
             .map_err(|e| Error::Pipeline(format!("baseline serialize: {e}")))?;
         crate::util::write_atomic(path, body.as_bytes())

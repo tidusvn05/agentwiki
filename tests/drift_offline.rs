@@ -196,6 +196,37 @@ async fn fixture_app_exit_codes() {
         "strict after baseline update must exit 0"
     );
 
+    // Baseline only stores gating classes — confirmed/unverifiable ids
+    // would just churn the committed file.
+    let baseline: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(tmp.path().join("baseline.json")).unwrap())
+            .unwrap();
+    let ids: Vec<&str> = baseline["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 2, "baseline should hold only phantom+reversed");
+    assert!(
+        ids.iter().all(|id| {
+            id.starts_with("phantom:")
+                || id.starts_with("reversed:")
+                || id.starts_with("undocumented:")
+        }),
+        "unexpected baseline ids: {ids:?}"
+    );
+
+    // `--baseline` overrides the config path for both write and read.
+    let alt = tmp.path().join("alt-baseline.json");
+    let mut a = args(&["--update-baseline"]);
+    a.baseline = Some(alt.clone());
+    assert_eq!(run(&a).await, 0);
+    assert!(alt.is_file(), "--baseline must redirect the write");
+    let mut a = args(&["--strict"]);
+    a.baseline = Some(alt);
+    assert_eq!(run(&a).await, 0, "--baseline must redirect the read");
+
     let missing = DriftArgs {
         project_path: Some(root.clone()),
         config: Some(cfg_toml.clone()),
@@ -203,6 +234,43 @@ async fn fixture_app_exit_codes() {
         ..Default::default()
     };
     assert_eq!(run(&missing).await, 2);
+}
+
+/// `.agentwiki/` doesn't exist on a fresh checkout — `drift` must create
+/// it rather than lose `drift.json` (regression: non-fatal warn + no file).
+#[tokio::test(flavor = "multi_thread")]
+async fn creates_internal_dir_for_drift_json() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let claims_file = root.join("claims.json");
+    std::fs::write(
+        &claims_file,
+        r#"{"relationships":{"core_dependencies":[
+            {"from":"src","to":"src","dependency_type":"Module","importance":1}
+        ]}}"#,
+    )
+    .unwrap();
+    let cfg_toml = root.join("agentwiki.toml");
+    std::fs::write(&cfg_toml, "[scan]\ngit_tracked_only = false\n").unwrap();
+
+    assert!(!root.join(".agentwiki").exists());
+    let args = DriftArgs {
+        project_path: Some(root.to_path_buf()),
+        config: Some(cfg_toml),
+        claims: Some(claims_file),
+        ..Default::default()
+    };
+    assert_eq!(
+        drift::run(args.project_path.clone(), args.config.clone(), &args, false).await,
+        0
+    );
+    let report = root.join(".agentwiki/drift.json");
+    assert!(report.is_file(), "drift.json must be created with its dir");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(report).unwrap()).unwrap();
+    assert_eq!(v["schema_version"], 1);
 }
 
 /// fixture-rs exercises the Rust paths: brace `use` groups, `super::`,

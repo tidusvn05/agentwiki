@@ -21,6 +21,14 @@ pub enum FindingClass {
 }
 
 impl FindingClass {
+    /// Classes worth recording in the baseline — `phantom`/`reversed`
+    /// gate `--strict`, `undocumented` is tracked so its `in_baseline`
+    /// flag still works. Confirmed/structural/unverifiable ids would
+    /// only churn the file.
+    pub fn is_gating(&self) -> bool {
+        matches!(self, Self::Undocumented | Self::Reversed | Self::Phantom)
+    }
+
     /// Stable label for reports.
     pub fn as_str(&self) -> &'static str {
         match self {

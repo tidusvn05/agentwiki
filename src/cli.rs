@@ -17,7 +17,7 @@ pub struct Args {
     #[arg(value_name = "PROFILE")]
     pub profile: Option<String>,
 
-    /// Subcommands (`doctor`). Any other first token is read as PROFILE.
+    /// Subcommands (`doctor`, `drift`). Any other first token is read as PROFILE.
     #[command(subcommand)]
     pub command: Option<Command>,
 

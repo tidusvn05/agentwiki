@@ -70,6 +70,9 @@ pub fn export_claims(research_path: &Path, dest: &Path) -> Result<usize> {
         .unwrap_or(0);
     let body = serde_json::to_string_pretty(&serde_json::json!({ "relationships": rel }))
         .map_err(|e| Error::Pipeline(format!("claims export serialize: {e}")))?;
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+    }
     crate::util::write_atomic(dest, body.as_bytes())?;
     Ok(n)
 }

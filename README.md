@@ -159,6 +159,8 @@ agentwiki drift -v                   # also list info-level edges
 agentwiki drift --json               # machine-readable report on stdout
 agentwiki drift --strict             # exit 1 on NEW phantom/reversed
 agentwiki drift --update-baseline    # record current findings, exit 0
+agentwiki drift --baseline ci-baseline.json   # override baseline path
+agentwiki drift --max-depth 2        # tighter transitive check
 agentwiki drift --export-claims claims.json   # commit-able claims copy
 ```
 
@@ -206,7 +208,7 @@ excluded_files   = ["*.lock", ".env", "Cargo.lock", ...]
 # `agentwiki drift` — all keys optional, the interesting ones:
 [drift]
 claims_path    = "claims.json"       # default: <internal>/research.json
-baseline_path  = ".drift-baseline.json"
+baseline_path  = ".drift-baseline.json"   # default: .agentwiki-drift-baseline.json
 ignore_nodes   = ["src/generated"]   # never flag undocumented edges here
 max_transitive_depth = 3             # hops for `confirmed transitive`
 

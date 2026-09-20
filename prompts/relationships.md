@@ -5,7 +5,7 @@ You are a professional software architecture analyst. Generate a project-level d
 
 ## Analysis Requirements:
 Generate a project-level dependency relationship graph, focusing on:
-1. Cross-directory module dependencies and data flows
+1. Cross-directory module dependencies (imports, function calls, composition)
 2. Architectural hierarchy (which directories are core, which are peripheral)
 3. Key integration points between directories
 4. Potential architectural issues or circular dependencies
@@ -20,6 +20,7 @@ Constraints:
 - Use plain strings for textual fields; never objects/arrays for those fields.
 - Use integer values for "importance" and "level".
 - Keep values concise and architecture-focused.
+- Use DataFlow ONLY when the two sides have no code-level reference at all — data passes through a shared file, database, message queue, or separate process. If either side imports, calls, or names the other's code, use Import / FunctionCall / Composition / Module instead.
 - If uncertain about dependency_type, use Module.
 
 {{language_instruction}}

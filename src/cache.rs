@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::error::{Error, Result};
 
 /// Bumped when prompt/schema semantics change; part of every cache key.
-pub const SCHEMA_VERSION: &str = "1";
+pub const SCHEMA_VERSION: &str = "2";
 
 /// On-disk record for one cached call.
 #[derive(Debug, Serialize, Deserialize)]

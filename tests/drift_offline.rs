@@ -234,6 +234,19 @@ async fn fixture_app_exit_codes() {
         ..Default::default()
     };
     assert_eq!(run(&missing).await, 2);
+
+    // Coverage distinguishes "checked" (confirmed/phantom/reversed)
+    // from "couldn't check" (structural/unverifiable). Fixture: 5
+    // confirmed + 1 reversed + 1 phantom checked of 8 claims; 1
+    // unverifiable (the DataFlow edge).
+    let drift_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(tmp.path().join("internal/drift.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(drift_json["coverage"]["checked"], 7);
+    assert_eq!(drift_json["coverage"]["total"], 8);
+    assert_eq!(drift_json["coverage"]["ratio"], 0.875);
+    assert_eq!(drift_json["counts"]["unverifiable"], 1);
 }
 
 /// `.agentwiki/` doesn't exist on a fresh checkout — `drift` must create
@@ -270,7 +283,7 @@ async fn creates_internal_dir_for_drift_json() {
     assert!(report.is_file(), "drift.json must be created with its dir");
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(report).unwrap()).unwrap();
-    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["schema_version"], 2);
 }
 
 /// fixture-rs exercises the Rust paths: brace `use` groups, `super::`,

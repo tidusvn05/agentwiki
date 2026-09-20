@@ -24,10 +24,13 @@ async fn main() -> anyhow::Result<()> {
             .await;
             std::process::exit(code);
         }
-        Some(Command::Drift(d)) => {
+        Some(Command::Drift(mut d)) => {
+            d.project_path = d.project_path.or(args.project_path);
+            d.config = d.config.or(args.config);
+            d.output_path = d.output_path.or(args.output_path);
             let code = agentwiki::drift::run(
-                d.project_path.clone().or(args.project_path),
-                d.config.clone().or(args.config),
+                d.project_path.clone(),
+                d.config.clone(),
                 &d,
                 args.verbose > 0,
             )

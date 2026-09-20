@@ -223,6 +223,17 @@ async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
     if !pctx.config.skip_documentation {
         let report = crate::output::verify(pctx).await?;
         crate::output::write_summary(pctx, &report, started.elapsed()).await?;
+        // Commit-able claims copy next to the docs — CI's `drift` finds
+        // it without anyone remembering `--export-claims`. Non-fatal,
+        // same spirit as `verify`.
+        let dest = pctx
+            .config
+            .output_path
+            .join(crate::drift::claims::CLAIMS_FILENAME);
+        let research = pctx.config.internal_path.join("research.json");
+        if let Err(e) = crate::drift::claims::export_claims(&research, &dest) {
+            tracing::warn!("failed to write {}: {e}", dest.display());
+        }
     }
 
     let stats = pctx.stats.lock().await;

@@ -8,7 +8,7 @@ use serde::Serialize;
 use super::findings::{Finding, FindingClass};
 
 /// Schema version of the JSON report.
-pub const REPORT_VERSION: u32 = 1;
+pub const REPORT_VERSION: u32 = 2;
 
 /// Full drift-check result.
 #[derive(Debug, Serialize)]
@@ -17,10 +17,12 @@ pub struct DriftReport {
     pub schema_version: u32,
     /// Where claims were read from.
     pub claims_source: String,
-    /// Claim edges after normalization/dedup.
+    /// Claim edges read from the claims file (before dedup).
     pub claims_total: usize,
     /// class → count.
     pub counts: BTreeMap<String, usize>,
+    /// How many claims were actually checked against code evidence.
+    pub coverage: Coverage,
     /// Hub nodes (in-degree ≥ `hub_in_degree_ratio`).
     pub hubs: Vec<String>,
     /// Per-filter blocked counts (undocumented chain).
@@ -30,6 +32,20 @@ pub struct DriftReport {
     /// Baseline bookkeeping, when a baseline is in play.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline: Option<BaselineInfo>,
+}
+
+/// Claim-check coverage — distinguishes "docs match code" from
+/// "tool could not check". A claim counts as checked when it got a real
+/// verdict (`confirmed`/`phantom`/`reversed`); `structural` and
+/// `unverifiable` do not.
+#[derive(Debug, Serialize)]
+pub struct Coverage {
+    /// Claims with a real verdict.
+    pub checked: usize,
+    /// Claim edges after normalization/dedup.
+    pub total: usize,
+    /// `checked / total` in 0.0–1.0 (0 when there are no claims).
+    pub ratio: f64,
 }
 
 /// Baseline diff summary inside the report.
@@ -62,11 +78,18 @@ impl DriftReport {
 }
 
 /// Human-readable report. `verbose` lists unverifiable/structural edges
-/// individually instead of grouping them by reason.
+/// individually; the per-reason totals print either way.
 pub fn render(r: &DriftReport, verbose: bool) -> String {
     use std::fmt::Write as _;
     let mut s = String::new();
     let _ = writeln!(s, "claims: {} ({} edges)", r.claims_source, r.claims_total);
+    let pct = (r.coverage.ratio * 100.0).round() as u32;
+    let unver = r.counts.get("unverifiable").copied().unwrap_or(0);
+    let _ = writeln!(
+        s,
+        "coverage: {}/{} claims checked ({pct}%) — {unver} unverifiable",
+        r.coverage.checked, r.coverage.total
+    );
 
     // ok — confirmed, split by reason.
     let mut by_reason: BTreeMap<&str, usize> = BTreeMap::new();
@@ -105,18 +128,17 @@ pub fn render(r: &DriftReport, verbose: bool) -> String {
                         .unwrap_or_default()
                 );
             }
-        } else {
-            let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
-            for f in &items {
-                *reasons.entry(f.reason.as_str()).or_default() += 1;
-            }
-            let rs = reasons
-                .iter()
-                .map(|(k, v)| format!("{v} {k}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let _ = writeln!(s, "        ({rs})");
         }
+        let mut reasons: BTreeMap<&str, usize> = BTreeMap::new();
+        for f in &items {
+            *reasons.entry(f.reason.as_str()).or_default() += 1;
+        }
+        let rs = reasons
+            .iter()
+            .map(|(k, v)| format!("{v} {k}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(s, "        ({rs})");
     }
 
     // warn — phantom / reversed / undocumented, always listed.
@@ -168,4 +190,62 @@ pub fn render(r: &DriftReport, verbose: bool) -> String {
     let n_fail = r.strict_failures().len();
     let _ = writeln!(s, "result: {n_fail} finding(s) would fail under --strict");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drift::findings::finding_id;
+
+    fn finding(class: FindingClass, reason: &str) -> Finding {
+        Finding {
+            id: finding_id(class, "a", "b"),
+            class,
+            from: "a".to_string(),
+            to: "b".to_string(),
+            kind: Some("import".to_string()),
+            importance: Some(3),
+            reason: reason.to_string(),
+            detail: None,
+            evidence: vec![],
+            in_baseline: false,
+        }
+    }
+
+    #[test]
+    fn render_shows_coverage_and_reason_totals() {
+        let r = DriftReport {
+            schema_version: REPORT_VERSION,
+            claims_source: "claims.json".to_string(),
+            claims_total: 4,
+            counts: BTreeMap::from([
+                ("confirmed".to_string(), 2),
+                ("unverifiable".to_string(), 1),
+                ("phantom".to_string(), 1),
+            ]),
+            coverage: Coverage {
+                checked: 3,
+                total: 4,
+                ratio: 0.75,
+            },
+            hubs: vec![],
+            filtered: BTreeMap::new(),
+            findings: vec![
+                finding(FindingClass::Confirmed, "direct_evidence"),
+                finding(FindingClass::Confirmed, "direct_evidence"),
+                finding(FindingClass::Unverifiable, "kind_not_checkable"),
+                finding(FindingClass::Phantom, "no_evidence"),
+            ],
+            baseline: None,
+        };
+        let s = render(&r, false);
+        assert!(
+            s.contains("coverage: 3/4 claims checked (75%) — 1 unverifiable"),
+            "{s}"
+        );
+        // -v lists each unverifiable edge AND keeps the reason totals.
+        let v = render(&r, true);
+        assert!(v.contains("a -> b [kind_not_checkable]"), "{v}");
+        assert!(v.contains("(1 kind_not_checkable)"), "{v}");
+    }
 }

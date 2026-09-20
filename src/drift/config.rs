@@ -132,13 +132,27 @@ pub struct DriftPartial {
 }
 
 impl DriftConfig {
-    /// Claims file to read: `[drift].claims_path` (repo-relative) or the
-    /// default `<internal>/research.json`. `--claims` wins over both.
-    pub fn claims_path(&self, project_root: &Path, internal: &Path) -> PathBuf {
+    /// Claims file to read. Order: `[drift].claims_path` (repo-relative)
+    /// → `<internal>/research.json` → `<output>/agentwiki.claims.json`
+    /// (the committed copy the pipeline writes next to the docs).
+    /// `--claims` wins over all of them. When neither default exists the
+    /// research path is returned so the error names it.
+    pub fn claims_path(&self, project_root: &Path, internal: &Path, output: &Path) -> PathBuf {
         match &self.claims_path {
             Some(p) if p.is_absolute() => p.clone(),
             Some(p) => project_root.join(p),
-            None => internal.join("research.json"),
+            None => {
+                let research = internal.join("research.json");
+                if research.is_file() {
+                    return research;
+                }
+                let committed = output.join(crate::drift::claims::CLAIMS_FILENAME);
+                if committed.is_file() {
+                    committed
+                } else {
+                    research
+                }
+            }
         }
     }
 
@@ -234,5 +248,36 @@ mod tests {
         assert_eq!(c.max_transitive_depth, 1);
         assert_eq!(c.min_language_coverage, 1.0);
         assert_eq!(c.min_undocumented_imports, 1);
+    }
+
+    #[test]
+    fn claims_path_search_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let internal = root.join("internal");
+        let output = root.join("docs");
+        std::fs::create_dir_all(&internal).unwrap();
+        std::fs::create_dir_all(&output).unwrap();
+        let c = DriftConfig::default();
+        let research = internal.join("research.json");
+        let committed = output.join(crate::drift::claims::CLAIMS_FILENAME);
+
+        // Neither default exists → research path (the error names it).
+        assert_eq!(c.claims_path(root, &internal, &output), research);
+        // Committed claims file is picked up when research.json is absent.
+        std::fs::write(&committed, "{}").unwrap();
+        assert_eq!(c.claims_path(root, &internal, &output), committed);
+        // research.json wins when both exist.
+        std::fs::write(&research, "{}").unwrap();
+        assert_eq!(c.claims_path(root, &internal, &output), research);
+        // `[drift].claims_path` beats the defaults either way.
+        let c = DriftConfig {
+            claims_path: Some(PathBuf::from("claims.json")),
+            ..Default::default()
+        };
+        assert_eq!(
+            c.claims_path(root, &internal, &output),
+            root.join("claims.json")
+        );
     }
 }

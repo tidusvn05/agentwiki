@@ -9,6 +9,7 @@ use std::time::Duration;
 use agentwiki::backend::mock::MockBackend;
 use agentwiki::backend::{AgentBackend, BackendKind};
 use agentwiki::config::Config;
+use agentwiki::drift::{self, DriftArgs};
 use agentwiki::error::Error;
 use agentwiki::{PipelineCtx, run};
 
@@ -121,6 +122,68 @@ async fn full_pipeline_offline() {
     assert!(internal.join("research.json").is_file());
     assert!(internal.join("cache").is_dir());
     assert!(mock.calls.lock().unwrap().len() > 5);
+
+    // The pipeline emits a commit-able claims copy next to the docs so
+    // `drift` works on a bare checkout. Same shape `--export-claims`
+    // writes, so `load_claims` reads it back unchanged.
+    let claims_file = out.join("agentwiki.claims.json");
+    assert!(claims_file.is_file(), "missing agentwiki.claims.json");
+    let claims = drift::claims::load_claims(&claims_file).unwrap();
+    assert_eq!(claims.len(), 1, "CANNED relationships has one edge");
+    assert_eq!(claims[0].from, "src");
+    assert_eq!(claims[0].to, "db");
+}
+
+/// Fresh-checkout flow: with `.agentwiki/` gone, `drift` must find the
+/// claims file committed next to the docs via the default search order
+/// (`<internal>/research.json` → `<output>/agentwiki.claims.json`).
+#[tokio::test(flavor = "multi_thread")]
+async fn drift_finds_committed_claims_without_internal_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock = Arc::new(MockBackend::canned(CANNED));
+    let pctx = PipelineCtx::new(test_config(&tmp, 100), Some(mock_backends(mock)))
+        .await
+        .unwrap();
+    run(&pctx).await.unwrap();
+    assert!(tmp.path().join("docs/agentwiki.claims.json").is_file());
+
+    // Simulate the CI checkout: internal state is gitignored/absent.
+    std::fs::remove_dir_all(tmp.path().join(".agentwiki")).unwrap();
+
+    let cfg_toml = tmp.path().join("agentwiki.toml");
+    std::fs::write(
+        &cfg_toml,
+        format!(
+            "internal_path = \"{}\"\noutput_path = \"{}\"\n[scan]\ngit_tracked_only = false\n",
+            tmp.path().join(".agentwiki").display(),
+            tmp.path().join("docs").display(),
+        ),
+    )
+    .unwrap();
+    let args = DriftArgs {
+        project_path: Some(fixture_dir()),
+        config: Some(cfg_toml),
+        ..Default::default()
+    };
+    assert_eq!(
+        drift::run(args.project_path.clone(), args.config.clone(), &args, false).await,
+        0,
+        "drift must read the committed claims file"
+    );
+    // drift.json is recreated under the (fresh) internal dir and names
+    // the committed claims file as its source.
+    let report: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(tmp.path().join(".agentwiki/drift.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        report["claims_source"]
+            .as_str()
+            .unwrap()
+            .ends_with("agentwiki.claims.json"),
+        "expected claims from committed file, got {}",
+        report["claims_source"]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

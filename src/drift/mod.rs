@@ -38,7 +38,13 @@ pub struct DriftArgs {
     #[arg(short = 'c', long)]
     pub config: Option<PathBuf>,
 
-    /// Claims file override (default `<internal>/research.json`).
+    /// Documentation output dir — also searched for a committed
+    /// `agentwiki.claims.json` (defaults to top-level `-o`).
+    #[arg(short = 'o', long)]
+    pub output_path: Option<PathBuf>,
+
+    /// Claims file override (default: `<internal>/research.json`, else
+    /// `<output>/agentwiki.claims.json`).
     #[arg(long, value_name = "PATH")]
     pub claims: Option<PathBuf>,
 
@@ -78,6 +84,7 @@ pub async fn run(
 ) -> i32 {
     let ov = CliOverrides {
         project_path: project_path.clone(),
+        output_path: args.output_path.clone(),
         ..Default::default()
     };
     let cfg = match Config::load(&ov, config_path.as_deref()) {
@@ -89,6 +96,9 @@ pub async fn run(
             if let Some(p) = &project_path {
                 c.internal_path = p.join(&c.internal_path);
                 c.project_path = p.clone();
+            }
+            if let Some(o) = &args.output_path {
+                c.output_path = o.clone();
             }
             c
         }
@@ -128,7 +138,7 @@ pub async fn run(
     let claims_path = match &args.claims {
         Some(p) if p.is_absolute() => p.clone(),
         Some(p) => root.join(p),
-        None => dcfg.claims_path(&root, &cfg.internal_path),
+        None => dcfg.claims_path(&root, &cfg.internal_path, &cfg.output_path),
     };
     let claims = match claims::load_claims(&claims_path) {
         Ok(c) => c,
@@ -325,11 +335,41 @@ fn build_report(claims_path: &Path, claims: &[CoreDependency], out: Outcome) -> 
     for f in &out.findings {
         *counts.entry(f.class.as_str().to_string()).or_default() += 1;
     }
+    // Coverage: claims that got a real verdict (confirmed/phantom/
+    // reversed) over all deduped claims — i.e. every non-`undocumented`
+    // finding is one normalized claim.
+    let total = out
+        .findings
+        .iter()
+        .filter(|f| f.class != findings::FindingClass::Undocumented)
+        .count();
+    let checked = out
+        .findings
+        .iter()
+        .filter(|f| {
+            matches!(
+                f.class,
+                findings::FindingClass::Confirmed
+                    | findings::FindingClass::Reversed
+                    | findings::FindingClass::Phantom
+            )
+        })
+        .count();
+    let ratio = if total == 0 {
+        0.0
+    } else {
+        (checked as f64 / total as f64 * 1e4).round() / 1e4
+    };
     DriftReport {
         schema_version: report::REPORT_VERSION,
         claims_source: claims_path.display().to_string(),
         claims_total: claims.len(),
         counts,
+        coverage: report::Coverage {
+            checked,
+            total,
+            ratio,
+        },
         hubs: out.hubs.iter().cloned().collect(),
         filtered: out.filtered,
         findings: out.findings,

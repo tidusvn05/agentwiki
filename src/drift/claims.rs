@@ -2,13 +2,19 @@
 //!
 //! "Claims" are the `relationships.core_dependencies` edges the research
 //! phase emits. `.agentwiki/` is gitignored, so CI needs a committed copy:
-//! `--export-claims` writes `{relationships: …}` to a repo-root file.
+//! the pipeline writes `{relationships: …}` to
+//! `<output>/agentwiki.claims.json` next to the docs, and `--export-claims`
+//! does the same to a caller-chosen file.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::agent::reports::CoreDependency;
 use crate::error::{Error, Result};
+
+/// File name of the claims copy the pipeline writes next to the docs —
+/// committed with the docs so `drift` works on a bare checkout.
+pub const CLAIMS_FILENAME: &str = "agentwiki.claims.json";
 
 /// How a claim endpoint resolved against the scanned tree.
 #[derive(Debug, Clone, PartialEq, Eq)]

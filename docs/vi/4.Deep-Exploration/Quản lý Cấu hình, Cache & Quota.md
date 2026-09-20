@@ -1,1 +1,0 @@
-I'll write the deep-dive document to `docs/Quan-ly-Cau-hinh-Cache-Quota.md`.

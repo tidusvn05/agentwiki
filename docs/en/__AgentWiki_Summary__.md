@@ -1,20 +1,29 @@
 # AgentWiki Run Summary
 
-- Generated: 2026-09-16T15:34:04.761216012Z
-- Project: [agentwiki](https://github.com/tidusvn05/agentwiki)
-- Total: 2094.9s
-- CLI calls: 12
+- Generated: 2026-09-20T16:16:28.678846233Z
+- Project: `/home/ruan/datspace/agentwiki`
+- Total: 1325.5s
+- CLI calls: 48
 - Cache hits: 0
-- Quota used today: 79/300
-- Mermaid blocks: 30, issues: 0
+- Quota used today: 129/300
+- Mermaid blocks: 29, issues: 0
 
 ## Spec timings
 
 | Spec | Seconds |
 |------|---------|
-| database_doc | 0.0 |
+| dir_summary | 435.7 |
+| system_context | 28.1 |
+| relationships | 34.2 |
+| database | 52.0 |
+| boundary | 66.8 |
+| domain_modules | 112.9 |
+| architecture | 88.8 |
+| workflow | 92.6 |
+| key_module | 221.8 |
 | boundary_doc | 0.0 |
-| architecture_doc | 270.5 |
-| workflow_doc | 316.8 |
-| overview | 430.4 |
-| deep_dive | 2025.5 |
+| database_doc | 0.0 |
+| overview | 39.5 |
+| architecture_doc | 97.5 |
+| workflow_doc | 106.5 |
+| deep_dive | 441.2 |

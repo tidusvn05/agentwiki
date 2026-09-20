@@ -98,16 +98,23 @@ State, cache, and audit logs live in `.agentwiki/` (gitignored).
 
 agentwiki documents itself — the committed
 [`docs/en/`](docs/en/) ([`docs/vi/`](docs/vi/) in Vietnamese) is real
-pipeline output, and [`docs/agentwiki.claims.json`](docs/agentwiki.claims.json)
-carries the claims so the docs are verifiable even on a bare checkout:
+pipeline output, and the committed claims file makes it verifiable even
+on a bare checkout:
 
 ```text
-$ agentwiki drift -o docs -v
-claims: docs/agentwiki.claims.json (13 edges)
-coverage: 8/13 claims checked (62%) — 5 unverifiable
-  ok   8 confirmed (3 containment, 5 direct_evidence)
-result: 0 finding(s) would fail under --strict
+$ agentwiki drift -o docs/en -v
+claims: docs/en/agentwiki.claims.json (17 edges)
+coverage: 11/17 claims checked (65%) — 6 unverifiable
+  ok   10 confirmed (3 containment, 7 direct_evidence)
+ warn  1 phantom
+        src/output -> src/agent/reports [import, importance 3]
+result: 1 finding(s) would fail under --strict
 ```
+
+Yes — drift flags a `phantom` edge in agentwiki's *own* generated claims:
+the model wrote that `src/output` imports `src/agent/reports`, but the
+import graph says otherwise. That is exactly the failure mode `drift`
+exists to catch.
 
 Two more verified walkthroughs live under [`examples/`](./examples/README.md):
 

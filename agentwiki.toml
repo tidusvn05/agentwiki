@@ -1,0 +1,14 @@
+# agentwiki self-configuration.
+# excluded_dirs replaces the built-in defaults, so the full list is kept here.
+# "docs" + "examples" exclude this repo's own generated output — otherwise the
+# committed docs (docs/vi in particular) leak into the scanned materials and
+# contaminate future runs (observed: vi-named domains in an en run).
+[scan]
+excluded_dirs = [
+  "target", "node_modules", "build", "dist", "venv", ".venv",
+  "__pycache__", "__tests__", "__mocks__", "out", "coverage",
+  "vendor", "deps", "_build", "bower_components", "Pods",
+  "DerivedData", ".gradle", ".svelte-kit", ".next", ".nuxt",
+  ".nx", ".turbo", ".output",
+  "docs", "examples",
+]

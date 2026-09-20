@@ -21,6 +21,7 @@ Constraints:
 - Use integer values for "importance" and "level".
 - Keep values concise and architecture-focused.
 - Use DataFlow ONLY when the two sides have no code-level reference at all — data passes through a shared file, database, message queue, or separate process. If either side imports, calls, or names the other's code, use Import / FunctionCall / Composition / Module instead.
+- `from` and `to` are each ONE code path (file or directory) — never join endpoints with "+" or ",", and never append prose like "(prompt rendering)". Split multi-endpoint relationships into separate edges; drop edges to files that do not exist.
 - If uncertain about dependency_type, use Module.
 
 {{language_instruction}}

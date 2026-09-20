@@ -241,6 +241,8 @@ pub struct Config {
     pub scan: ScanConfig,
     /// Verify options.
     pub verify: VerifyConfig,
+    /// `agentwiki drift` options.
+    pub drift: crate::drift::config::DriftConfig,
     /// Name of the applied profile (`agentwiki <profile>`), if any.
     pub profile: Option<String>,
 }
@@ -263,6 +265,7 @@ impl Default for Config {
             limits: LimitsConfig::default(),
             scan: ScanConfig::default(),
             verify: VerifyConfig::default(),
+            drift: crate::drift::config::DriftConfig::default(),
             profile: None,
         }
     }
@@ -288,6 +291,7 @@ struct TomlConfig {
     limits: Option<LimitsPartial>,
     scan: Option<ScanPartial>,
     verify: Option<VerifyPartial>,
+    drift: Option<crate::drift::config::DriftPartial>,
     /// Named profiles selectable via `agentwiki <profile>`.
     profiles: Option<HashMap<String, TomlConfig>>,
 }
@@ -554,6 +558,9 @@ impl Config {
             && let Some(b) = v.mermaid_fixer
         {
             self.verify.mermaid_fixer = b;
+        }
+        if let Some(d) = &t.drift {
+            self.drift.apply(d);
         }
     }
 

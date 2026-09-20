@@ -73,17 +73,22 @@ pub struct Args {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Verbose logging (`-v` info, `-vv` debug, `-vvv` trace).
-    #[arg(short = 'v', long, action = clap::ArgAction::Count)]
+    /// Verbose logging (`-v` info, `-vv` debug, `-vvv` trace); also
+    /// selects verbose output on subcommands.
+    #[arg(short = 'v', long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 }
 
-/// Subcommands. `doctor` shadows a profile of the same name.
+/// Subcommands. `doctor`/`drift` shadow a profile of the same name.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Health-check the environment: agent CLIs on PATH, running or
     /// orphaned agent processes, `.agentwiki/` state, config sanity.
     Doctor(DoctorArgs),
+
+    /// Check generated `core_dependencies` claims against a statically
+    /// extracted import graph. Read-only; exit 1 only under `--strict`.
+    Drift(crate::drift::DriftArgs),
 }
 
 /// `agentwiki doctor` options.

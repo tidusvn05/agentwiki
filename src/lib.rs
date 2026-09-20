@@ -30,6 +30,7 @@ pub mod cli;
 pub mod config;
 pub mod diag;
 pub mod doctor;
+pub mod drift;
 pub mod error;
 pub mod output;
 pub mod pipeline;

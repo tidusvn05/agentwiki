@@ -22,6 +22,10 @@ All tests run offline via `MockBackend` — no agent CLI or network needed.
 - New DAG agent = one `AgentSpec` in `src/agent/registry.rs` + a prompt
   template in `prompts/` (+ a typed report in `src/agent/reports/` when it
   returns JSON).
+- New drift-check language = one extractor in `src/drift/imports/` +
+  one resolver in `src/drift/resolve/` (plus a `Lang` arm). Keep evidence
+  asymmetric: wide graph for phantom/reversed, strict graph for
+  undocumented.
 - Keep prompt/LLM behavior deterministic where possible; prefer adding to
   the typed-report layer over free-form text.
 

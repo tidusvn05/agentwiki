@@ -145,6 +145,38 @@ configured models require), running/orphaned agent processes, the
 last call), and project/output writability. Exit code is `1` when any
 check fails, so it is usable in scripts.
 
+### `agentwiki drift`
+
+Read-only drift check: compares the generated `core_dependencies` claims
+against a statically-extracted import graph (Rust / Python / JS-TS) and
+reports `confirmed` / `structural` / `unverifiable` / `undocumented` /
+`reversed` / `phantom` edges. No LLM calls, no writes to your tree except
+`<internal>/drift.json`.
+
+```sh
+agentwiki drift                      # report only, exit 0
+agentwiki drift -v                   # also list info-level edges
+agentwiki drift --json               # machine-readable report on stdout
+agentwiki drift --strict             # exit 1 on NEW phantom/reversed
+agentwiki drift --update-baseline    # record current findings, exit 0
+agentwiki drift --export-claims claims.json   # commit-able claims copy
+```
+
+`.agentwiki/` is gitignored, so CI needs the claims committed:
+`--export-claims` writes just `relationships.core_dependencies` to a file
+you can check in; point `[drift] claims_path` at it.
+
+Suggested CI rollout:
+
+```yaml
+# 1. observe — learn the noise level, never fail
+- run: agentwiki drift
+  continue-on-error: true
+# 2. locally: `agentwiki drift --update-baseline`, commit baseline + claims
+# 3. gate — fail only on NEW phantom/reversed findings
+- run: agentwiki drift --strict
+```
+
 ## Configuration
 
 `agentwiki.toml` in the project (or `~/.config/agentwiki/config.toml` for
@@ -170,6 +202,13 @@ include_hidden   = false
 include_tests    = false
 excluded_dirs    = ["target", "node_modules", "vendor", "dist", ...]
 excluded_files   = ["*.lock", ".env", "Cargo.lock", ...]
+
+# `agentwiki drift` — all keys optional, the interesting ones:
+[drift]
+claims_path    = "claims.json"       # default: <internal>/research.json
+baseline_path  = ".drift-baseline.json"
+ignore_nodes   = ["src/generated"]   # never flag undocumented edges here
+max_transitive_depth = 3             # hops for `confirmed transitive`
 
 # Named profiles — `agentwiki <profile>` applies them:
 [profiles.research]

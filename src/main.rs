@@ -11,16 +11,30 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     init_tracing(args.verbose);
 
-    // `doctor` is read-only: it must not scan, take the run lock, or
-    // install the cancellation handler.
-    if let Some(Command::Doctor(d)) = args.command {
-        let code = agentwiki::doctor::run(
-            d.project_path.or(args.project_path),
-            d.config.or(args.config),
-            d.fix,
-        )
-        .await;
-        std::process::exit(code);
+    // `doctor`/`drift` are read-only: they must not take the run lock or
+    // install the cancellation handler. `drift` does scan (it needs the
+    // file list) but never writes pipeline state.
+    match args.command {
+        Some(Command::Doctor(d)) => {
+            let code = agentwiki::doctor::run(
+                d.project_path.or(args.project_path),
+                d.config.or(args.config),
+                d.fix,
+            )
+            .await;
+            std::process::exit(code);
+        }
+        Some(Command::Drift(d)) => {
+            let code = agentwiki::drift::run(
+                d.project_path.clone().or(args.project_path),
+                d.config.clone().or(args.config),
+                &d,
+                args.verbose > 0,
+            )
+            .await;
+            std::process::exit(code);
+        }
+        None => {}
     }
 
     let overrides = CliOverrides::from(&args);

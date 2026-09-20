@@ -104,7 +104,9 @@ pub fn find(
                 continue;
             }
             // U7 — claims already connect a⇝b through a deep chain.
-            if claim_distance(&claim_adj, a, b) >= MIN_COVERING_PATH {
+            // `None` (no claims path at all) is *more* undocumented, not
+            // less — only an existing, deep chain suppresses.
+            if matches!(claim_distance(&claim_adj, a, b), Some(d) if d >= MIN_COVERING_PATH) {
                 bump("u7_claimed_path");
                 continue;
             }
@@ -147,8 +149,8 @@ fn is_ancestor(a: &str, b: &str) -> bool {
     !a.is_empty() && b.len() > a.len() && b.starts_with(a) && b.as_bytes()[a.len()] == b'/'
 }
 
-/// Shortest distance `a →…→ b` in the claims graph (`usize::MAX` = none).
-fn claim_distance(adj: &BTreeMap<&str, BTreeSet<&str>>, a: &str, b: &str) -> usize {
+/// Shortest distance `a →…→ b` in the claims graph (`None` = no path).
+fn claim_distance(adj: &BTreeMap<&str, BTreeSet<&str>>, a: &str, b: &str) -> Option<usize> {
     let mut dist: BTreeMap<&str, usize> = BTreeMap::from([(a, 0)]);
     let mut frontier = vec![a];
     while let Some(n) = frontier.pop() {
@@ -160,5 +162,114 @@ fn claim_distance(adj: &BTreeMap<&str, BTreeSet<&str>>, a: &str, b: &str) -> usi
             }
         }
     }
-    dist.get(b).copied().unwrap_or(usize::MAX)
+    dist.get(b).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::super::claims::Endpoint;
+    use super::super::compare::ClaimedEdge;
+    use super::super::graph::{FileEdge, FileGraph, build_nodes, lift};
+    use super::super::imports::{EvidenceKind, Lang};
+    use super::*;
+    use crate::agent::reports::DependencyType;
+
+    /// Node dirs a–d each own one code file; the real edge under test is
+    /// `a → b` with 3 import sites. `claims` lists the claim-side edges.
+    fn setup(claims: &[(&str, &str)]) -> (Vec<ClaimedEdge>, NodeSet, NodeGraph) {
+        let mut claimed: Vec<ClaimedEdge> = Vec::new();
+        let mut endpoints: Vec<Endpoint> = Vec::new();
+        for &(a, b) in claims {
+            claimed.push(ClaimedEdge {
+                from: a.to_string(),
+                to: b.to_string(),
+                from_ep: Endpoint::Dir(PathBuf::from(a)),
+                to_ep: Endpoint::Dir(PathBuf::from(b)),
+                kind: DependencyType::Import,
+                importance: 1,
+            });
+            endpoints.push(Endpoint::Dir(PathBuf::from(a)));
+            endpoints.push(Endpoint::Dir(PathBuf::from(b)));
+        }
+        let code: Vec<(PathBuf, Lang)> = [
+            "a/f1.py", "a/f2.py", "a/f3.py", "b/g.py", "c/h.py", "d/i.py",
+        ]
+        .iter()
+        .map(|f| (PathBuf::from(f), Lang::Python))
+        .collect();
+        let nodes = build_nodes(&endpoints, &code);
+        let fg = FileGraph {
+            edges: ["f1", "f2", "f3"]
+                .iter()
+                .map(|f| FileEdge {
+                    importer: PathBuf::from(format!("a/{f}.py")),
+                    target: PathBuf::from("b/g.py"),
+                    kind: EvidenceKind::Import,
+                    test_only: false,
+                    line: 1,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let g_full = lift(&fg.edges, &nodes, false);
+        (claimed, nodes, g_full)
+    }
+
+    #[test]
+    fn u7_unreachable_claims_still_report() {
+        // Claims mention a and b but never connect a⇝b: the edge is as
+        // undocumented as it gets — must NOT be filtered by U7.
+        let cfg = DriftConfig::default();
+        let (claimed, nodes, g_full) = setup(&[("a", "c"), ("c", "d"), ("b", "c")]);
+        let mut filtered = BTreeMap::new();
+        let out = find(
+            &cfg,
+            &nodes,
+            &g_full,
+            &BTreeSet::new(),
+            &claimed,
+            &mut filtered,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "undocumented:a->b");
+    }
+
+    #[test]
+    fn u7_deep_claims_path_suppresses() {
+        // Claims connect a→c→d→b (distance 3): implied dependency, drop.
+        let cfg = DriftConfig::default();
+        let (claimed, nodes, g_full) = setup(&[("a", "c"), ("c", "d"), ("d", "b")]);
+        let mut filtered = BTreeMap::new();
+        let out = find(
+            &cfg,
+            &nodes,
+            &g_full,
+            &BTreeSet::new(),
+            &claimed,
+            &mut filtered,
+        );
+        assert!(out.is_empty());
+        assert_eq!(filtered.get("u7_claimed_path"), Some(&1));
+    }
+
+    #[test]
+    fn u7_layer_skip_still_reports() {
+        // Claims connect a→c→b (distance 2): a 1-intermediate skip is
+        // still worth reporting.
+        let cfg = DriftConfig::default();
+        let (claimed, nodes, g_full) = setup(&[("a", "c"), ("c", "b")]);
+        let mut filtered = BTreeMap::new();
+        let out = find(
+            &cfg,
+            &nodes,
+            &g_full,
+            &BTreeSet::new(),
+            &claimed,
+            &mut filtered,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "undocumented:a->b");
+    }
 }

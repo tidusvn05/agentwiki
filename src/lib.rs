@@ -28,6 +28,7 @@ pub mod backend;
 pub mod cache;
 pub mod cli;
 pub mod config;
+pub mod diag;
 pub mod doctor;
 pub mod error;
 pub mod output;

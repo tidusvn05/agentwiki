@@ -1,0 +1,176 @@
+{
+  "relationships": {
+    "architecture_layers": [
+      {
+        "components": [
+          "db/schema.sql"
+        ],
+        "level": 1,
+        "name": "Data / Schema"
+      },
+      {
+        "components": [
+          "src/config.ts",
+          "src/models.ts"
+        ],
+        "level": 2,
+        "name": "Configuration & Models"
+      },
+      {
+        "components": [
+          "src/infra/db.ts",
+          "src/infra/cache.ts"
+        ],
+        "level": 3,
+        "name": "Infrastructure"
+      },
+      {
+        "components": [
+          "src/middleware/auth.ts"
+        ],
+        "level": 4,
+        "name": "Middleware"
+      },
+      {
+        "components": [
+          "src/handlers/notes.ts",
+          "src/handlers/tasks.ts",
+          "src/handlers/users.ts"
+        ],
+        "level": 5,
+        "name": "Feature Handlers"
+      },
+      {
+        "components": [
+          "src/routes/index.ts"
+        ],
+        "level": 6,
+        "name": "Routing"
+      },
+      {
+        "components": [
+          "src/index.ts",
+          "src/server.ts"
+        ],
+        "level": 7,
+        "name": "Application Entry"
+      }
+    ],
+    "core_dependencies": [
+      {
+        "dependency_type": "Import",
+        "description": "Entry point imports and starts the HTTP server via startServer.",
+        "from": "src/index.ts",
+        "importance": 5,
+        "to": "src/server.ts"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Entry point loads configuration before startup.",
+        "from": "src/index.ts",
+        "importance": 4,
+        "to": "src/config.ts"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Server mounts the aggregated application router.",
+        "from": "src/server.ts",
+        "importance": 5,
+        "to": "src/routes/index.ts"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Server wires checkAuth authentication middleware.",
+        "from": "src/server.ts",
+        "importance": 4,
+        "to": "src/middleware/auth.ts"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Server initializes the shared database layer.",
+        "from": "src/server.ts",
+        "importance": 4,
+        "to": "src/infra/db.ts"
+      },
+      {
+        "dependency_type": "Composition",
+        "description": "Router mounts the notes feature router.",
+        "from": "src/routes/index.ts",
+        "importance": 4,
+        "to": "src/handlers/notes.ts"
+      },
+      {
+        "dependency_type": "Composition",
+        "description": "Router mounts the tasks feature router.",
+        "from": "src/routes/index.ts",
+        "importance": 4,
+        "to": "src/handlers/tasks.ts"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "list() queries the notes table via shared db client.",
+        "from": "src/handlers/notes.ts",
+        "importance": 4,
+        "to": "src/infra/db.ts"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "list() queries the tasks table via shared db client.",
+        "from": "src/handlers/tasks.ts",
+        "importance": 4,
+        "to": "src/infra/db.ts"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "list() queries the users table via shared db client.",
+        "from": "src/handlers/users.ts",
+        "importance": 4,
+        "to": "src/infra/db.ts"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "DB client reads connection config.",
+        "from": "src/infra/db.ts",
+        "importance": 3,
+        "to": "src/config.ts"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Cache stub reads shared config.",
+        "from": "src/infra/cache.ts",
+        "importance": 2,
+        "to": "src/config.ts"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Auth compares request tokens against configured token.",
+        "from": "src/middleware/auth.ts",
+        "importance": 3,
+        "to": "src/config.ts"
+      },
+      {
+        "dependency_type": "DataFlow",
+        "description": "DB queries operate on the notes table defined in schema.sql.",
+        "from": "src/infra/db.ts",
+        "importance": 3,
+        "to": "db/schema.sql"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Handlers use shared model types (Note, Task, User).",
+        "from": "src/handlers/notes.ts",
+        "importance": 2,
+        "to": "src/models.ts"
+      }
+    ],
+    "key_insights": [
+      "Classic layered REST architecture: entry point -> server -> routes -> handlers -> infra -> schema, with config and models as shared cross-cutting modules.",
+      "src/config.ts is a hub dependency: index, infra, and middleware all import it, making it a single point of coupling.",
+      "src/infra/db.ts is the key integration point between the HTTP layer and persistence; all handlers funnel queries through it.",
+      "The users handler exists but the routes aggregator only mounts tasks and notes, per the dossier — a likely wiring gap or intentional stub.",
+      "db/schema.sql defines only the notes table, so tasks and users handlers lack a canonical schema — a data-model coverage gap.",
+      "No circular dependencies evident; dependency flow is strictly downward from entry to infrastructure.",
+      "Infra modules (db, cache) are stubs, so the graph reflects intended architecture documented in handwritten.claims.json more than real integrations."
+    ]
+  }
+}

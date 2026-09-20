@@ -1,0 +1,22 @@
+claims: <project>/docs/claims-curated.json (11 edges)
+coverage: 8/11 claims checked (73%) — 2 unverifiable
+  ok   6 confirmed (3 containment, 2 direct_evidence, 1 transitive)
+ info  1 structural
+        src -> src/services [containment]
+        (1 containment)
+ info  2 unverifiable
+        db -> src [language_coverage] — from endpoint 'db': 0/1 files in supported languages
+        src -> db [kind_not_checkable]
+        (1 kind_not_checkable, 1 language_coverage)
+ warn  1 phantom
+        src/services -> src/main.py [import, importance 2]
+ warn  1 reversed
+        src/cli.py -> src/main.py [import, importance 2]
+          e.g. src/main.py:2 (-> src/cli.py)
+ warn  1 undocumented
+        src/services -> src/core
+          e.g. src/services/mail.py:2 (-> src/core/db.py)
+          e.g. src/services/mail.py:3 (-> src/core/naming.py)
+          e.g. src/services/report.py:2 (-> src/core/naming.py)
+          4 import site(s)
+result: 2 finding(s) would fail under --strict

@@ -1,0 +1,7 @@
+{
+  "name": "notes-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Small notes REST API (spike fixture)",
+  "main": "src/index.ts"
+}

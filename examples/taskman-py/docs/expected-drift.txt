@@ -1,0 +1,11 @@
+claims: <project>/docs/agentwiki.claims.json (11 edges)
+coverage: 9/11 claims checked (82%) — 2 unverifiable
+  ok   8 confirmed (8 direct_evidence)
+ info  2 unverifiable
+        src/storage.py -> db/schema.sql [kind_not_checkable]
+        taskman/handwritten.claims.json -> src [unknown_endpoint]
+        (1 kind_not_checkable, 1 unknown_endpoint)
+ warn  1 phantom
+        src/services/report.py -> src/core/db.py [function_call, importance 3]
+filtered: u8_thin=4
+result: 1 finding(s) would fail under --strict

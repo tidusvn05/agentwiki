@@ -1,0 +1,8 @@
+claims: <project>/docs/agentwiki.claims.json (15 edges)
+coverage: 14/15 claims checked (93%) — 1 unverifiable
+  ok   14 confirmed (14 direct_evidence)
+ info  1 unverifiable
+        src/infra/db.ts -> db/schema.sql [kind_not_checkable]
+        (1 kind_not_checkable)
+filtered: u8_thin=2
+result: 0 finding(s) would fail under --strict

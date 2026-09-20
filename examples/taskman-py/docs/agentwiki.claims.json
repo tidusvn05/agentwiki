@@ -1,0 +1,131 @@
+{
+  "relationships": {
+    "architecture_layers": [
+      {
+        "components": [
+          "src/core (db.py, naming.py)",
+          "db (schema.sql)"
+        ],
+        "level": 1,
+        "name": "Core infrastructure"
+      },
+      {
+        "components": [
+          "src/models.py",
+          "src/storage.py"
+        ],
+        "level": 2,
+        "name": "Domain and persistence"
+      },
+      {
+        "components": [
+          "src/services (sync.py, mail.py, report.py)"
+        ],
+        "level": 3,
+        "name": "Application services"
+      },
+      {
+        "components": [
+          "src/handlers.py"
+        ],
+        "level": 4,
+        "name": "Command handling"
+      },
+      {
+        "components": [
+          "src/main.py",
+          "src/cli.py"
+        ],
+        "level": 5,
+        "name": "Entry point / CLI"
+      }
+    ],
+    "core_dependencies": [
+      {
+        "dependency_type": "FunctionCall",
+        "description": "Entry point invokes the CLI dispatch layer to run the application.",
+        "from": "src/main.py",
+        "importance": 5,
+        "to": "src/cli.py"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "CLI dispatches parsed commands to command handlers.",
+        "from": "src/cli.py",
+        "importance": 5,
+        "to": "src/handlers.py"
+      },
+      {
+        "dependency_type": "Composition",
+        "description": "Handlers use the Storage class to persist Task records.",
+        "from": "src/handlers.py",
+        "importance": 5,
+        "to": "src/storage.py"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Handlers construct and manipulate Task domain models.",
+        "from": "src/handlers.py",
+        "importance": 4,
+        "to": "src/models.py"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "Storage obtains SQLite connections via core connect() factory.",
+        "from": "src/storage.py",
+        "importance": 5,
+        "to": "src/core/db.py"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Storage serializes/deserializes Task model instances.",
+        "from": "src/storage.py",
+        "importance": 4,
+        "to": "src/models.py"
+      },
+      {
+        "dependency_type": "Module",
+        "description": "Sync service reads local tasks and pushes them to remote storage.",
+        "from": "src/services/sync.py",
+        "importance": 4,
+        "to": "src/storage.py"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "Reminder mail uses slugify for naming identifiers.",
+        "from": "src/services/mail.py",
+        "importance": 3,
+        "to": "src/core/naming.py"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "Report rendering queries tasks via the shared DB connection factory.",
+        "from": "src/services/report.py",
+        "importance": 3,
+        "to": "src/core/db.py"
+      },
+      {
+        "dependency_type": "DataFlow",
+        "description": "Storage writes rows into the tasks table defined by schema.sql; no code-level reference, only shared schema contract.",
+        "from": "src/storage.py",
+        "importance": 4,
+        "to": "db/schema.sql"
+      },
+      {
+        "dependency_type": "Module",
+        "description": "Root manifest declares the main.py → cli.py → handlers.py dependency chain.",
+        "from": "taskman/handwritten.claims.json",
+        "importance": 2,
+        "to": "src"
+      }
+    ],
+    "key_insights": [
+      "Clean layered architecture: execution flows downward from main.py → cli.py → handlers.py → storage.py → core/db.py, with no upward dependencies.",
+      "src/core is the shared foundation: both storage.py and the services layer depend on its connect() and slugify() primitives, making it the highest fan-in module.",
+      "db/schema.sql is a pure data contract — the tasks table schema couples the database to storage.py without any import-level dependency, so schema drift is a risk if not versioned alongside code.",
+      "The services layer sits parallel to handlers.py rather than being called by it; if handlers never invoke services, features like sync and reminders may only be reachable through a separate entry path — worth verifying wiring.",
+      "No circular dependencies are evident; the only declared-graph file (handwritten.claims.json) confirms a linear entry chain.",
+      "models.py is a leaf dependency used by both handlers and storage, which is healthy — but services may bypass it if they query raw SQL directly via core/db."
+    ]
+  }
+}

@@ -1,0 +1,11 @@
+# Example config — output_path follows the docs convention; the committed
+# claims file is found via [drift].claims_path (project-relative, so
+# `agentwiki drift -p examples/notes-api-ts` works from any directory).
+output_path = "docs"
+
+[scan]
+# Examples must scan even when copied out of a git checkout.
+git_tracked_only = false
+
+[drift]
+claims_path = "docs/agentwiki.claims.json"

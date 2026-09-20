@@ -188,6 +188,10 @@ Suggested CI rollout:
 - run: agentwiki drift --strict
 ```
 
+Two verified walkthroughs — a Python project whose real `devin` claims
+contain a genuine hallucinated edge, and a TypeScript project with the
+full generated doc set — live under [`examples/`](./examples/README.md).
+
 ## Configuration
 
 `agentwiki.toml` in the project (or `~/.config/agentwiki/config.toml` for

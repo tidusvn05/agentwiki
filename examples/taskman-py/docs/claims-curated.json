@@ -1,0 +1,75 @@
+{
+  "relationships": {
+    "core_dependencies": [
+      {
+        "from": "src/main.py",
+        "to": "src/cli.py",
+        "dependency_type": "Import",
+        "importance": 5,
+        "description": "entry point dispatches to the CLI layer"
+      },
+      {
+        "from": "src/cli.py",
+        "to": "src/handlers.py",
+        "dependency_type": "Import",
+        "importance": 5
+      },
+      {
+        "from": "src/main.py",
+        "to": "src/handlers.py",
+        "dependency_type": "FunctionCall",
+        "importance": 3
+      },
+      {
+        "from": "src",
+        "to": "src/core",
+        "dependency_type": "Module",
+        "importance": 4
+      },
+      {
+        "from": "src",
+        "to": "src/services",
+        "dependency_type": "Module",
+        "importance": 4
+      },
+      {
+        "from": "src/services",
+        "to": "src",
+        "dependency_type": "Module",
+        "importance": 3
+      },
+      {
+        "from": "src/cli.py",
+        "to": "src/main.py",
+        "dependency_type": "Import",
+        "importance": 2,
+        "description": "CLI re-exports the entry point"
+      },
+      {
+        "from": "src/handlers.py",
+        "to": "src",
+        "dependency_type": "Import",
+        "importance": 3
+      },
+      {
+        "from": "src/services",
+        "to": "src/main.py",
+        "dependency_type": "Import",
+        "importance": 2
+      },
+      {
+        "from": "src",
+        "to": "db",
+        "dependency_type": "DataFlow",
+        "importance": 4,
+        "description": "tasks are persisted to the SQLite schema"
+      },
+      {
+        "from": "db",
+        "to": "src",
+        "dependency_type": "Import",
+        "importance": 1
+      }
+    ]
+  }
+}

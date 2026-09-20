@@ -44,12 +44,14 @@ pub struct DriftArgs {
     pub output_path: Option<PathBuf>,
 
     /// Claims file override (default: `<internal>/research.json`, else
-    /// `<output>/agentwiki.claims.json`).
+    /// `<output>/agentwiki.claims.json`). Relative paths resolve against
+    /// the project root (`-p`), not the working directory.
     #[arg(long, value_name = "PATH")]
     pub claims: Option<PathBuf>,
 
     /// Baseline file override (default: `[drift].baseline_path`, else
-    /// `<project>/.agentwiki-drift-baseline.json`).
+    /// `<project>/.agentwiki-drift-baseline.json`). Relative paths resolve
+    /// against the project root (`-p`), not the working directory.
     #[arg(long, value_name = "PATH")]
     pub baseline: Option<PathBuf>,
 
@@ -67,6 +69,8 @@ pub struct DriftArgs {
     pub update_baseline: bool,
 
     /// Export `relationships` from research.json to a commit-able file.
+    /// Relative paths resolve against the project root (`-p`), not the
+    /// working directory.
     #[arg(long, value_name = "PATH")]
     pub export_claims: Option<PathBuf>,
 

@@ -83,3 +83,49 @@ async fn notes_api_ts_is_fully_confirmed() {
     let (code, _) = run("notes-api-ts", true).await;
     assert_eq!(code, 0, "--strict must pass on a clean example");
 }
+
+/// `docs/expected-drift*.txt` are real snapshots, not just docs — diff
+/// them against `agentwiki drift -v` after normalizing the project path
+/// and dropping volatile tracing (` INFO`) lines.
+#[test]
+fn expected_drift_snapshots_stay_fresh() {
+    for (name, extra, snapshot) in [
+        ("taskman-py", vec!["-v"], "docs/expected-drift.txt"),
+        (
+            "taskman-py",
+            vec!["-v", "--claims", "docs/claims-curated.json"],
+            "docs/expected-drift-curated.txt",
+        ),
+        ("notes-api-ts", vec!["-v"], "docs/expected-drift.txt"),
+    ] {
+        let root = example(name);
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_agentwiki"))
+            .arg("drift")
+            .arg("-p")
+            .arg(&root)
+            .args(&extra)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "drift -p {} {extra:?} failed: {}",
+            root.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        let got = stdout
+            .lines()
+            .filter(|l| !l.contains(" INFO"))
+            .map(|l| l.replace(root.to_str().unwrap(), "<project>"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let want = std::fs::read_to_string(root.join(snapshot)).unwrap();
+        assert_eq!(
+            got.trim_end(),
+            want.trim_end(),
+            "{snapshot} is stale — regenerate with \
+             `agentwiki drift -p examples/{name} {extra_extra}`",
+            extra_extra = extra.join(" ")
+        );
+    }
+}

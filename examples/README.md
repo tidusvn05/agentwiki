@@ -49,6 +49,8 @@ agentwiki drift -p examples/taskman-py --update-baseline
 agentwiki drift -p examples/taskman-py --strict          # exit 0
 
 # the full verdict matrix on one file (curated claims)
+# NB: --claims resolves against the project root (-p), not your cwd —
+# `docs/...` here means examples/taskman-py/docs/...
 agentwiki drift -p examples/taskman-py --claims docs/claims-curated.json -v
 
 # machine-readable report

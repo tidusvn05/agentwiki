@@ -174,7 +174,10 @@ pipeline already writes `<output>/agentwiki.claims.json` next to the docs,
 so committing the doc tree is enough. `drift` looks for claims in this
 order: `--claims` → `[drift].claims_path` → `<internal>/research.json` →
 `<output>/agentwiki.claims.json`. `--export-claims` remains for keeping
-the file somewhere else.
+the file somewhere else. Relative `--claims`, `--baseline`, and
+`--export-claims` paths resolve against the project root (`-p`), not the
+working directory — so `drift -p repo --claims repo/docs/c.json` looks for
+`repo/repo/docs/c.json`.
 
 Suggested CI rollout:
 

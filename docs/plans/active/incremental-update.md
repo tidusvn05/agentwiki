@@ -349,6 +349,15 @@ agentic — user embedded thuần không có baseline `status` (report in
 "no-baseline" + hint). Trade chi phí build manifest mỗi run cho visibility
 — chọn theo hướng không-tax cho user mặc định.
 
+**Follow-up đã biết** (phát hiện khi regen docs thật, v0.6.0): ở agentic
+mode, `deep_dive`/`architecture_doc` agents có cwd = repo root nên *thấy*
+cả docs đã generate — model đôi khi trả về narration ("file đã tồn tại,
+tôi sẽ verify và rewrite") hoặc wrap toàn bộ doc trong ```` ```markdown ````
+fence thay vì emit content. Validation retry bắt được một số, hai case lọt
+qua và phải evict cache + strip thủ công. Fix hợp lý: normalize response
+(strip outer fence) trong writer + heuristic phát hiện narration-only để
+retry — nằm ngoài scope plan này.
+
 ## Không làm — và lý do
 
 - **Patch prose trực tiếp** — decay tích lũy vô hình (xem góc nhìn

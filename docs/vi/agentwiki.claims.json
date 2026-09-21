@@ -3,27 +3,36 @@
     "architecture_layers": [
       {
         "components": [
-          "src (config.rs, cli.rs, cache.rs, quota.rs, prompt.rs, diag.rs, progress.rs, error.rs, sys.rs, util.rs)",
-          "Cargo.toml"
+          "src/config.rs",
+          "src/error.rs",
+          "src/cache.rs",
+          "src/quota.rs",
+          "src/manifest.rs",
+          "src/prompt",
+          "src/progress.rs",
+          "src/sys.rs",
+          "src/util.rs"
         ],
         "level": 1,
-        "name": "Infrastructure & Config"
+        "name": "Foundation & Infrastructure"
       },
       {
         "components": [
-          "src/scanner",
-          "src/drift/imports",
-          "src/drift/resolve"
+          "src/scanner"
         ],
         "level": 2,
-        "name": "Deterministic Scan & Import Extraction"
+        "name": "Deterministic Scanning"
       },
       {
         "components": [
-          "src/backend"
+          "src/backend",
+          "src/backend/claude.rs",
+          "src/backend/codex.rs",
+          "src/backend/devin.rs",
+          "src/backend/mock.rs"
         ],
         "level": 3,
-        "name": "Backend Adapter Layer"
+        "name": "Backend Abstraction"
       },
       {
         "components": [
@@ -37,14 +46,37 @@
       },
       {
         "components": [
-          "src/pipeline",
-          "src/drift",
-          "src/output",
-          "src/doctor.rs",
-          "src/main.rs"
+          "src/pipeline"
         ],
         "level": 5,
-        "name": "Pipeline & Analysis Commands"
+        "name": "Pipeline Orchestration"
+      },
+      {
+        "components": [
+          "src/output"
+        ],
+        "level": 6,
+        "name": "Output & Verification"
+      },
+      {
+        "components": [
+          "src/drift",
+          "src/drift/imports",
+          "src/drift/resolve"
+        ],
+        "level": 6,
+        "name": "Drift Analysis"
+      },
+      {
+        "components": [
+          "src/main.rs",
+          "src/cli.rs",
+          "src/doctor.rs",
+          "src/diag.rs",
+          "src/status.rs"
+        ],
+        "level": 7,
+        "name": "Entry & Tooling"
       },
       {
         "components": [
@@ -52,140 +84,289 @@
           "tests/fixture-app",
           "tests/fixture-rs"
         ],
-        "level": 6,
+        "level": 8,
         "name": "Tests & Fixtures"
       }
     ],
     "core_dependencies": [
       {
         "dependency_type": "FunctionCall",
-        "description": "Binary entry point dispatches CLI commands into library modules",
+        "description": "CLI entry point dispatches into run/run_pipeline orchestration.",
         "from": "src/main.rs",
-        "importance": 5,
-        "to": "src (lib root: cli, config, pipeline, drift, doctor)"
-      },
-      {
-        "dependency_type": "Composition",
-        "description": "CLI parsing and TOML/config merging produce the Config consumed by the pipeline",
-        "from": "src/cli.rs + src/config.rs",
         "importance": 5,
         "to": "src/pipeline"
       },
       {
         "dependency_type": "FunctionCall",
-        "description": "Preprocess phase: deterministic repo scan produces ScanData/FileEntry inputs",
+        "description": "Routes the `agentwiki drift` subcommand to the drift analyzer.",
+        "from": "src/main.rs",
+        "importance": 3,
+        "to": "src/drift"
+      },
+      {
+        "dependency_type": "Composition",
+        "description": "CLI args are merged into Config via CliOverrides.",
+        "from": "src/cli.rs",
+        "importance": 4,
+        "to": "src/config.rs"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "Phase 0: pipeline calls scanner::scan to produce ScanData consumed by all later stages.",
         "from": "src/pipeline",
         "importance": 5,
         "to": "src/scanner"
       },
       {
         "dependency_type": "FunctionCall",
-        "description": "Executes the declarative agent DAG in dependency-level order for Research and Compose",
+        "description": "Builds the task DAG of research/compose agent specs executed level-by-level.",
         "from": "src/pipeline",
         "importance": 5,
-        "to": "src/agent (spec/registry/runner)"
+        "to": "src/agent/registry.rs"
       },
       {
-        "dependency_type": "Import",
-        "description": "Drives devin/claude/codex/mock backends via the AgentBackend trait and for_kind factory",
+        "dependency_type": "FunctionCall",
+        "description": "run_spec executes each agent spec's agentic loop against a backend.",
+        "from": "src/pipeline",
+        "importance": 5,
+        "to": "src/agent/runner.rs"
+      },
+      {
+        "dependency_type": "Composition",
+        "description": "PipelineCtx holds constructed AgentBackend instances keyed by BackendKind.",
         "from": "src/pipeline",
         "importance": 5,
         "to": "src/backend"
       },
       {
         "dependency_type": "FunctionCall",
-        "description": "Write and Verify phases: doc-tree writer, renderers, and post-write verifier",
+        "description": "Write/Verify stages call writer, verify, and summary entry points.",
         "from": "src/pipeline",
         "importance": 4,
         "to": "src/output"
       },
       {
-        "dependency_type": "FunctionCall",
-        "description": "Calls backends with caching, quota accounting, retry, and model fallback",
+        "dependency_type": "Composition",
+        "description": "Content-hash cache stored on PipelineCtx for incremental gating.",
+        "from": "src/pipeline",
+        "importance": 3,
+        "to": "src/cache.rs"
+      },
+      {
+        "dependency_type": "Composition",
+        "description": "Daily cap and audit log enforced during agent calls.",
+        "from": "src/pipeline",
+        "importance": 3,
+        "to": "src/quota.rs"
+      },
+      {
+        "dependency_type": "Composition",
+        "description": "PromptLoader renders templates from prompts/ with injected context.",
+        "from": "src/pipeline",
+        "importance": 4,
+        "to": "src/prompt"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Manifest fingerprint feeds incremental gate and agentic-mode cache keys.",
+        "from": "src/pipeline",
+        "importance": 3,
+        "to": "src/manifest.rs"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Runner builds AgentRequest, invokes AgentBackend::run, and consumes AgentResult/TokenUsage.",
         "from": "src/agent/runner.rs",
         "importance": 5,
         "to": "src/backend"
       },
       {
-        "dependency_type": "Composition",
-        "description": "Shared typed ResearchContext for inter-agent results; materials inject scan data into prompts",
+        "dependency_type": "Import",
+        "description": "Runner reads PipelineCtx (config, cache, quota, semaphore, cancel) — a mutual module reference with pipeline.",
         "from": "src/agent/runner.rs",
-        "importance": 4,
-        "to": "src/agent/context.rs + src/agent/materials.rs"
+        "importance": 3,
+        "to": "src/pipeline"
       },
       {
         "dependency_type": "Import",
-        "description": "Agent output contracts: lenient serde/schemars report types for dir_summary, relationships, research",
-        "from": "src/agent/registry.rs + spec.rs",
+        "description": "LLM JSON output is parsed into typed reports via the lenient deserializers.",
+        "from": "src/agent/runner.rs",
         "importance": 4,
         "to": "src/agent/reports"
       },
       {
-        "dependency_type": "DataFlow",
-        "description": "Markdown prompt templates are loaded as data and rendered/injected at runtime; no code-level reference",
-        "from": "src/agent + src/output (prompt rendering)",
+        "dependency_type": "Import",
+        "description": "Prompt materials render ScanData/DirectoryInfo and tree views for agents.",
+        "from": "src/agent/materials.rs",
         "importance": 4,
-        "to": "prompts/ + prompts/editors/"
+        "to": "src/scanner"
       },
       {
         "dependency_type": "Import",
-        "description": "Deterministic renderers (database, boundary) consume typed research reports",
-        "from": "src/output",
-        "importance": 3,
+        "description": "Registry wires report schemas into agent specs.",
+        "from": "src/agent/registry.rs",
+        "importance": 4,
         "to": "src/agent/reports"
       },
       {
         "dependency_type": "Module",
-        "description": "Language detection, sanitizing, and raw import extraction feed edge resolution",
+        "description": "for_kind dispatches BackendKind::Claude to the claude CLI backend.",
+        "from": "src/backend/mod.rs",
+        "importance": 4,
+        "to": "src/backend/claude.rs"
+      },
+      {
+        "dependency_type": "Module",
+        "description": "for_kind dispatches BackendKind::Codex to the codex CLI backend.",
+        "from": "src/backend/mod.rs",
+        "importance": 4,
+        "to": "src/backend/codex.rs"
+      },
+      {
+        "dependency_type": "Module",
+        "description": "for_kind dispatches BackendKind::Devin to the devin CLI backend.",
+        "from": "src/backend/mod.rs",
+        "importance": 4,
+        "to": "src/backend/devin.rs"
+      },
+      {
+        "dependency_type": "Module",
+        "description": "Scripted mock backend implements AgentBackend for offline tests.",
+        "from": "src/backend/mod.rs",
+        "importance": 3,
+        "to": "src/backend/mock.rs"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Renders DatabaseOverviewReport into 6.Database-Overview.md.",
+        "from": "src/output/database.rs",
+        "importance": 4,
+        "to": "src/agent/reports"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Renders BoundaryAnalysisReport into the boundary document.",
+        "from": "src/output/boundary.rs",
+        "importance": 4,
+        "to": "src/agent/reports"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "write_docs reads results out of PipelineCtx's ResearchContext.",
+        "from": "src/output/writer.rs",
+        "importance": 3,
+        "to": "src/pipeline"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Verify stage inspects pipeline outputs for integrity and mermaid syntax.",
+        "from": "src/output/verify.rs",
+        "importance": 3,
+        "to": "src/pipeline"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Drift loads CoreDependency claims produced by the relationship analysis.",
+        "from": "src/drift",
+        "importance": 4,
+        "to": "src/agent/reports"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Reuses the deterministic scan to enumerate files for import extraction.",
+        "from": "src/drift",
+        "importance": 4,
+        "to": "src/scanner"
+      },
+      {
+        "dependency_type": "Module",
+        "description": "Extracts RawImport/ImportSpec per language via js/python/rust parsers.",
         "from": "src/drift",
         "importance": 4,
         "to": "src/drift/imports"
       },
       {
         "dependency_type": "Module",
-        "description": "Resolves raw imports into Internal/External/Unresolved file edges and builds FileGraph",
+        "description": "Resolves raw imports into repo-internal files via build_file_graph.",
         "from": "src/drift",
         "importance": 4,
         "to": "src/drift/resolve"
       },
       {
-        "dependency_type": "FunctionCall",
-        "description": "build_file_graph runs extract_imports then per-language resolvers over every file",
-        "from": "src/drift/resolve",
+        "dependency_type": "DataFlow",
+        "description": "RawImport values produced by extraction are consumed by the resolution layer.",
+        "from": "src/drift/imports",
         "importance": 4,
-        "to": "src/drift/imports"
+        "to": "src/drift/resolve"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Verdict chain C1–C12 operates over the lifted file/node graph.",
+        "from": "src/drift/compare.rs",
+        "importance": 3,
+        "to": "src/drift/graph.rs"
+      },
+      {
+        "dependency_type": "Import",
+        "description": "Report filters findings against a saved baseline of known issues.",
+        "from": "src/drift/report.rs",
+        "importance": 2,
+        "to": "src/drift/baseline.rs"
       },
       {
         "dependency_type": "DataFlow",
-        "description": "Reads LLM-produced core_dependencies claims JSON to compare against the real import graph",
-        "from": "src/drift",
-        "importance": 3,
-        "to": "src/agent/reports/relationship.rs (claims)"
+        "description": "Markdown templates are loaded and rendered at runtime; no code-level reference.",
+        "from": "prompts",
+        "importance": 4,
+        "to": "src/prompt"
       },
       {
-        "dependency_type": "Composition",
-        "description": "Cross-cutting infrastructure services injected into PipelineCtx and the runner",
-        "from": "src (cache.rs, quota.rs, prompt.rs, diag.rs, progress.rs)",
-        "importance": 4,
-        "to": "src/pipeline + src/agent/runner.rs"
+        "dependency_type": "DataFlow",
+        "description": "Editor-persona templates consumed during the Compose phase.",
+        "from": "prompts/editors",
+        "importance": 3,
+        "to": "src/prompt"
       },
       {
         "dependency_type": "Module",
-        "description": "Offline integration tests exercise pipeline via MockBackend and drift via fixture scan targets",
+        "description": "Integration tests exercise pipeline, drift, and incremental paths via the library crate.",
+        "from": "tests",
+        "importance": 4,
+        "to": "src"
+      },
+      {
+        "dependency_type": "FunctionCall",
+        "description": "Offline tests drive the pipeline through the scripted mock backend.",
         "from": "tests",
         "importance": 3,
-        "to": "src (lib) + tests/fixture-app + tests/fixture-rs"
+        "to": "src/backend/mock.rs"
+      },
+      {
+        "dependency_type": "DataFlow",
+        "description": "Python fixture app provides scan/drift input for tests.",
+        "from": "tests",
+        "importance": 2,
+        "to": "tests/fixture-app"
+      },
+      {
+        "dependency_type": "DataFlow",
+        "description": "Rust fixture crate exercises Rust import extraction and resolution.",
+        "from": "tests",
+        "importance": 2,
+        "to": "tests/fixture-rs"
       }
     ],
     "key_insights": [
-      "Clean layered architecture: scanner and drift import extraction are pure/deterministic; all LLM interaction is isolated behind the AgentBackend trait in src/backend.",
-      "src/pipeline is the single orchestration hub — it owns PipelineCtx and sequences scanner → agent DAG → output, keeping phases decoupled.",
-      "The agent layer uses a declarative spec/registry DAG plus a typed ResearchContext store, so research agents communicate via typed reports rather than direct coupling.",
-      "Prompt templates are pure data dependencies (loaded at runtime), so prompt changes carry no compile-time coupling — but also no compile-time validation of template variables.",
-      "src/drift forms a self-contained read-only subsystem (imports → resolve → compare/report) that depends on LLM claims only via a JSON file, enabling offline CI gating.",
-      "No circular dependencies: dependencies flow strictly upward from scanner/backend/reports into agent and pipeline; drift consumes agent output as data, not code.",
-      "Peripheral risk: mock.rs lives in src/backend, meaning test infrastructure is compiled into the production adapter layer; acceptable but worth noting for binary size/separation.",
-      "Fixture crates under tests/ are intentionally isolated (own Cargo workspace) and only scanned, so test targets cannot leak into the main dependency graph."
+      "Layered pipeline architecture: scanner (deterministic Phase 0) → agent orchestration (LLM fan-out) → output rendering, coordinated centrally by src/pipeline's PipelineCtx.",
+      "src/pipeline is the hub: it depends on scanner, agent, backend, output, cache, quota, prompt, and manifest, making it the highest fan-out module and the main integration point.",
+      "There is a mutual module reference between src/pipeline and src/agent/runner.rs: pipeline calls run_spec while runner imports PipelineCtx — a mild cyclic dependency at module level, mitigated by Rust's crate-internal visibility but worth watching.",
+      "The AgentBackend trait in src/backend cleanly decouples the pipeline from CLI backends; adding a new agent CLI only requires a new backend file plus a BackendKind variant.",
+      "src/drift is a self-contained read-only subsystem (claims → imports → resolve → compare → report) that reuses scanner and agent::reports but never calls LLM backends — good separation of concerns.",
+      "Prompt templates under prompts/ and prompts/editors/ are pure runtime data dependencies (DataFlow); changing them alters behavior without any code change, so they behave like configuration.",
+      "agent::reports' lenient deserialization layer is a key integration seam: every LLM-produced JSON funnels through it, centralizing robustness against malformed model output.",
+      "No circular dependencies exist between major subsystems (scanner, agent, backend, output, drift); the only cycle is the pipeline↔runner pair.",
+      "tests depend on the library plus mock backend and fixture trees rather than real CLIs, keeping the suite hermetic; e2e_real_cli is the only opt-in external dependency.",
+      "Potential issue: drift reuses agent::reports::CoreDependency as its claims format, coupling the drift analyzer to the LLM report schema — schema changes there propagate into drift claims parsing."
     ]
   }
 }

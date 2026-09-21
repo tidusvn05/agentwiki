@@ -1,0 +1,1 @@
+Tôi đã đọc đầy đủ 10 file nguồn của module. Viết tài liệu deep-dive bằng tiếng Việt, ghi đè file hiện có theo convention `docs/en/4.Deep-Exploration/`.

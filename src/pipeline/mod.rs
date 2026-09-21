@@ -13,7 +13,7 @@ use crate::agent::spec::Phase;
 use crate::agent::{ExecKind, ResearchContext, run_spec};
 use crate::backend::{AgentBackend, BackendKind};
 use crate::cache::Cache;
-use crate::config::Config;
+use crate::config::{Config, Mode};
 use crate::error::{Error, Result};
 use crate::prompt::PromptLoader;
 use crate::quota::Quota;
@@ -26,8 +26,10 @@ pub struct PipelineCtx {
     /// Phase-0 scan output.
     pub scan: ScanData,
     /// Fingerprint of the scanned inputs — feeds the incremental gate
-    /// and agentic-mode cache keys.
-    pub manifest: crate::manifest::Manifest,
+    /// and agentic-mode cache keys. `None` on plain embedded runs,
+    /// where its build (hash + import graph over every file) buys
+    /// nothing; `status` builds its own on demand.
+    pub manifest: Option<crate::manifest::Manifest>,
     /// Research/compose result store.
     pub ctx: ResearchContext,
     /// Content-hash cache.
@@ -91,7 +93,11 @@ impl PipelineCtx {
         backends: Option<HashMap<BackendKind, Arc<dyn AgentBackend>>>,
     ) -> Result<Arc<Self>> {
         let scan = scanner::scan(&config)?;
-        let manifest = crate::manifest::Manifest::build(&scan, &config);
+        // The manifest costs a read+hash of every file plus the import
+        // graph — worth it only when something consumes it: `--incremental`
+        // needs the diff, agentic mode mixes it into cache keys.
+        let manifest = (config.incremental || config.mode == Mode::Agentic)
+            .then(|| crate::manifest::Manifest::build(&scan, &config));
 
         let internal = config.internal_path.clone();
         std::fs::create_dir_all(&internal).map_err(|e| Error::io(&internal, e))?;
@@ -202,6 +208,10 @@ pub async fn run(pctx: &Arc<PipelineCtx>) -> Result<()> {
 async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
     let started = Instant::now();
 
+    // Whether fresh research ran this run — the manifest may only
+    // advance when it did (`--skip-research` composes over older
+    // research and must not claim the tree).
+    let mut research_ran = false;
     if pctx.config.skip_research {
         let path = pctx.config.internal_path.join("research.json");
         pctx.load_research(&path).await?;
@@ -212,10 +222,11 @@ async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
         // overwritten by a real run, so the pending cosmetic delta stays
         // visible to `agentwiki status` instead of being absorbed.
         if pctx.config.incremental
+            && let Some(cur) = pctx.manifest.as_ref()
             && let Some(prev) =
                 crate::manifest::Manifest::load(&crate::manifest::manifest_path(&pctx.config))
         {
-            let diff = prev.diff(&pctx.manifest);
+            let diff = prev.diff(cur);
             match crate::manifest::classify(&diff) {
                 crate::manifest::Significance::Cosmetic if docs_reusable(pctx) => {
                     let n = diff.changed_files.len();
@@ -238,14 +249,7 @@ async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
         // Persist research so `--skip-research` can reuse it later.
         let path = pctx.config.internal_path.join("research.json");
         pctx.ctx.save(&path).await?;
-        // The manifest pairs with research.json — record exactly what
-        // the fresh research was computed from.
-        if let Err(e) = pctx
-            .manifest
-            .save(&crate::manifest::manifest_path(&pctx.config))
-        {
-            tracing::warn!("failed to write manifest: {e}");
-        }
+        research_ran = true;
     }
 
     if pctx.cancel.is_cancelled() {
@@ -255,6 +259,17 @@ async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
     if !pctx.config.skip_documentation {
         compose(pctx).await?;
         crate::output::write_docs(pctx).await?;
+        // The manifest asserts "the docs on disk reflect this tree" —
+        // record it only once write_docs has actually completed. Saving
+        // earlier would let an interrupted compose leave the manifest
+        // claiming a state the docs never reached, and the next
+        // --incremental run could then no-op over stale docs forever.
+        if research_ran
+            && let Some(m) = &pctx.manifest
+            && let Err(e) = m.save(&crate::manifest::manifest_path(&pctx.config))
+        {
+            tracing::warn!("failed to write manifest: {e}");
+        }
     }
 
     if pctx.cancel.is_cancelled() {
@@ -293,10 +308,34 @@ async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
     Ok(())
 }
 
-/// Cosmetic skip is only valid when the artifacts it preserves actually
-/// exist — otherwise fall through to a real run.
+/// A cosmetic skip is only valid when the artifacts it preserves exist
+/// *and* postdate the research they render. The written list — recorded
+/// by `write_docs` itself — is the source of truth for "what should be
+/// on disk": a missing entry (deleted doc, cleaned output dir) fails
+/// open to a real run, as does a `research.json` newer than the list
+/// (research was saved but compose never completed — e.g. an
+/// interrupted run).
 fn docs_reusable(pctx: &PipelineCtx) -> bool {
-    pctx.config.internal_path.join("research.json").is_file() && pctx.config.output_path.is_dir()
+    let internal = &pctx.config.internal_path;
+    let out = &pctx.config.output_path;
+    if !out.is_dir() {
+        return false;
+    }
+    let (Ok(research), Ok(written)) = (
+        std::fs::metadata(internal.join("research.json")),
+        std::fs::metadata(crate::output::writer::written_docs_path(&pctx.config)),
+    ) else {
+        return false;
+    };
+    if let (Ok(r), Ok(w)) = (research.modified(), written.modified())
+        && r > w
+    {
+        return false;
+    }
+    match crate::output::writer::load_written_docs(&pctx.config) {
+        Some(docs) => !docs.is_empty() && docs.iter().all(|rel| out.join(rel).is_file()),
+        None => false,
+    }
 }
 
 /// Post-run drift check (warn-only): reloads the claims file just written

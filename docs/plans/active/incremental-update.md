@@ -327,6 +327,28 @@ domain đó → cache hit tự nhiên khi domain không đổi → "selective" �
 chạy lại (rẻ — đa số hit cache) nên docs luôn được viết lại từ data mới
 nhất, không patch prose.
 
+### Sửa sau review (F1–F7)
+
+| # | Vấn đề | Sửa |
+|---|---|---|
+| F1 | `manifest.save()` trước compose/write → interrupt giữa chừng để manifest "claim" tree mà docs chưa viết | Save sau `write_docs` thành công, chỉ khi research thật sự chạy (`--skip-research` không advance fingerprint) |
+| F2 | `docs_reusable` chỉ kiểm "research.json tồn tại + output là dir" → doc bị xoá vẫn báo "fresh" | Ground truth mới: `written-docs-<key>.json` (ghi cuối `write_docs`). No-op chỉ khi mọi doc đã ghi còn đúng trên đĩa **và** `research.json` không mới hơn record (research-save-không-compose → rerun) |
+| F3 | `canonicalize` fallback giữ `./` → manifest slot đổi khi output dir mới tạo (orphan + `env_changed` giả) | `stable_abs`: normalize `.`/`..` lexical + canonicalize ancestor gần nhất — path ổn định trước/sau khi dir tồn tại |
+| F4 | Test invariant `canned` map theo agent, bỏ qua prompt — "incremental ≡ full" overclaim | `hashing_backend` inject `sha256(prompt)` vào response → invariant phát biểu lại đúng: **structural rerun ≡ fresh full run** (cosmetic skip *cố ý* không regen docs — hợp đồng khác, đã có test riêng) |
+| F5 | Cleanup xoá mọi `.md` lạ trong `4.Deep-Exploration/` — kể cả file user tự thêm | Deletion giới hạn bởi written-docs record của run trước — chỉ xoá file agentwiki đã ghi mà run này không còn |
+| F6 | Mảnh 0 không có tác dụng ở agentic mode (global agents dùng repo fingerprint — đổi file nào cũng bust) | Đúng hướng an toàn (cwd repo-root đọc được mọi thứ); đã ghi vào README |
+| F7 | `Manifest::build` vô điều kiện mỗi run — chi phí mới cho cả user không dùng incremental | `manifest: Option` — chỉ build khi `incremental || mode == Agentic`; `status` tự build on-demand |
+
+**Phát hiện phụ từ F4**: prompt embed tên+path của project root (qua
+root dossier) — hai bản copy ở path khác nhau không bao giờ cho doc tree
+giống nhau byte-đối-byte. Invariant test vì vậy dùng *cùng một* project
+dir với internal/output dir riêng biệt.
+
+**Đánh đổi chấp nhận**: manifest chỉ được ghi bởi run `--incremental` hoặc
+agentic — user embedded thuần không có baseline `status` (report in
+"no-baseline" + hint). Trade chi phí build manifest mỗi run cho visibility
+— chọn theo hướng không-tax cho user mặc định.
+
 ## Không làm — và lý do
 
 - **Patch prose trực tiếp** — decay tích lũy vô hình (xem góc nhìn

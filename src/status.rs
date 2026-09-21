@@ -210,7 +210,7 @@ fn doc_statuses(cfg: &Config, structural: bool, changed_paths: &[String]) -> Vec
 
     // Deep-dives: one doc per domain in research.json.
     let domains = domain_paths(cfg);
-    let dd = out.join("4.Deep-Exploration");
+    let dd = out.join(crate::output::writer::DEEP_DIVE_DIR);
     let mut seen: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dd) {
         for e in rd.flatten() {
@@ -226,9 +226,9 @@ fn doc_statuses(cfg: &Config, structural: bool, changed_paths: &[String]) -> Vec
     for name in seen {
         // Map file name back to a domain via sanitized filename — the
         // same transform the writer applies.
-        let domain = domains
-            .iter()
-            .find(|(d, _)| sanitize(d) == name.trim_end_matches(".md"));
+        let domain = domains.iter().find(|(d, _)| {
+            crate::output::writer::sanitize_filename(d) == name.trim_end_matches(".md")
+        });
         let touched = match domain {
             Some((_, paths)) => paths.iter().any(|cp| {
                 changed_paths
@@ -237,7 +237,7 @@ fn doc_statuses(cfg: &Config, structural: bool, changed_paths: &[String]) -> Vec
             }),
             None => false, // doc without a matching domain — leftover
         };
-        let path = format!("4.Deep-Exploration/{name}");
+        let path = format!("{}/{name}", crate::output::writer::DEEP_DIVE_DIR);
         let state = if structural || touched {
             doc_state(&out.join(&path), true)
         } else {
@@ -280,18 +280,6 @@ fn domain_paths(cfg: &Config) -> Vec<(String, Vec<String>)> {
         .unwrap_or_default()
 }
 
-/// Same filename transform as `output::writer` (kept in sync).
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
-            other => other,
-        })
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
 fn render(r: &StatusReport) -> String {
     use std::fmt::Write as _;
     let mut s = format!("agentwiki status — {}\n\n", r.project);
@@ -302,7 +290,8 @@ fn render(r: &StatusReport) -> String {
         None => {
             let _ = writeln!(
                 s,
-                "manifest: none — no tracked baseline; the next run is a full run"
+                "manifest: none — no tracked baseline; the next run is a full run\n  \
+                 (baselines are recorded by `--incremental` and agentic runs)"
             );
         }
     }

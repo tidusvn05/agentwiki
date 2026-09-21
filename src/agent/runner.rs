@@ -324,14 +324,19 @@ async fn build_prompt(
 /// subtree; every other agent gets the whole-repo fingerprint — with a
 /// repo-root cwd it can read anything, so any change must invalidate it.
 fn agentic_inputs(spec: &AgentSpec, target: Option<&FanTarget>, pctx: &PipelineCtx) -> String {
+    // Always `Some` in agentic mode (the build is gated on it); the
+    // empty fallback keeps a defensive constant rather than panicking.
+    let Some(m) = &pctx.manifest else {
+        return String::new();
+    };
     if spec.fan_out == Some(FanOut::PerDir)
         && let Some(d) = target.and_then(|t| t.dir.as_ref())
     {
         let rel = d.rel_path.to_string_lossy();
         let rel = if rel.is_empty() { "." } else { rel.as_ref() };
-        return pctx.manifest.subtree_fingerprint(rel);
+        return m.subtree_fingerprint(rel);
     }
-    pctx.manifest.fingerprint_all()
+    m.fingerprint_all()
 }
 
 /// `{{materials}}` — dep results + scan materials.

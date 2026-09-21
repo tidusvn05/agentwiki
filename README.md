@@ -85,7 +85,7 @@ State, cache, and audit logs live in `.agentwiki/` (gitignored).
   (`.agentwiki/manifest-*.json`): cosmetic-only diffs become a 0-call
   no-op, structural diffs run the cache-accelerated pipeline. Per-domain
   agents only see their own domain's research slice, so unrelated edits
-  don't churn their cache keys.
+  don't churn their cache keys (embedded mode only — see note below).
 - **`agentwiki status`** — freshness report: what changed since the last
   run, whether the next run is incremental or full, per-doc age.
 - **Safe to interrupt** — `Ctrl-C` cancels cooperatively, kills in-flight
@@ -251,6 +251,13 @@ as **cosmetic** → `--incremental` becomes a 0-call no-op and `status` shows
 the edited dirs as pending until the next structural run. Enable the mode
 with `--incremental` or `incremental = true` in `agentwiki.toml`; without
 it, behavior is unchanged.
+
+Two scope notes: per-domain cache-key narrowing applies to **embedded**
+mode only — in `agentic` mode every global agent can read the whole repo,
+so any file change busts their cache keys (fail-open on purpose). And a
+0-call no-op is taken only while every doc the previous run wrote is
+still on disk and `research.json` hasn't been touched since — deleted or
+interrupted output falls back to a real run.
 
 ### `agentwiki doctor`
 

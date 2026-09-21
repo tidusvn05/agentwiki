@@ -109,6 +109,43 @@ fn call_log(mock: &MockBackend) -> Vec<String> {
     mock.calls.lock().unwrap().clone()
 }
 
+/// Prompt-sensitive backend: canned bodies get a `_h` field (JSON) or a
+/// trailing marker (markdown) carrying a hash of the request prompt —
+/// so a changed prompt anywhere upstream propagates into the doc bodies,
+/// unlike `canned`, which answers every prompt with the same bytes.
+/// Agents without a canned body still get `{}` unchanged.
+fn hashing_backend() -> MockBackend {
+    let map: Vec<(String, String)> = CANNED
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    MockBackend::new(move |req| {
+        let body = map
+            .iter()
+            .find(|(k, _)| req.agent == *k)
+            .or_else(|| {
+                map.iter().find(|(k, _)| {
+                    req.agent
+                        .strip_prefix(k.as_str())
+                        .is_some_and(|rest| rest.starts_with('@'))
+                })
+            })
+            .map(|(_, v)| v.clone());
+        let Some(body) = body else {
+            return Ok("{}".to_string());
+        };
+        use sha2::Digest;
+        let tag = &hex::encode(sha2::Sha256::digest(&req.prompt))[..12];
+        match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(mut v) if v.is_object() => {
+                v["_h"] = tag.into();
+                Ok(v.to_string())
+            }
+            _ => Ok(format!("{body}\n\n<!-- prompt:{tag} -->")),
+        }
+    })
+}
+
 /// Doc-tree contents, excluding the summary (it embeds per-run stats).
 fn docs_snapshot(dir: &Path) -> HashMap<String, Vec<u8>> {
     fn walk(d: &Path, base: &Path, out: &mut HashMap<String, Vec<u8>>) {
@@ -234,51 +271,238 @@ async fn env_change_forces_full_run() {
     );
 }
 
-/// The golden invariant: incremental-skip output == fresh full-run
-/// output on the same tree.
+/// The invariant that holds: an incremental *structural rerun* produces
+/// the same doc tree as a fresh full run on the same tree. The prompt-
+/// hashing backend gives this teeth — any step the rerun wrongly skipped
+/// or fed stale ctx to changes a prompt, which changes the doc bytes.
+/// (A cosmetic *skip* deliberately does not regenerate docs, so "skip ≡
+/// full run" is not claimed — see `cosmetic_change_incremental_noop`
+/// for the preservation contract instead.)
 #[tokio::test(flavor = "multi_thread")]
-async fn incremental_skip_matches_fresh_full_run() {
+async fn structural_rerun_matches_fresh_full_run() {
     let tmp = tempfile::tempdir().unwrap();
-    let proj_a = tmp.path().join("a");
-    let proj_b = tmp.path().join("b");
-    copy_dir(&fixture_dir(), &proj_a);
-    copy_dir(&fixture_dir(), &proj_b);
+    // Both sides share one project dir — prompts embed the root's
+    // name/path, so two copies at different paths can never produce
+    // identical docs. Separate internal/output dirs keep each run's
+    // cache+manifest state independent.
+    let proj = tmp.path().join("app");
+    copy_dir(&fixture_dir(), &proj);
 
-    // A: full run, cosmetic edit, incremental run (skips).
-    let cfg_a = test_config(&proj_a, &tmp.path().join("ta"), true);
+    // A: full run, structural edit, incremental run (must re-run).
+    let cfg_a = test_config(&proj, &tmp.path().join("ta"), true);
     std::fs::create_dir_all(tmp.path().join("ta")).unwrap();
-    let mock_a = Arc::new(MockBackend::canned(CANNED));
-    let pctx = PipelineCtx::new(cfg_a.clone(), Some(mock_backends(mock_a)))
-        .await
-        .unwrap();
-    run(&pctx).await.unwrap();
-    for p in [&proj_a, &proj_b] {
-        let f = p.join("src/models.py");
-        let mut body = std::fs::read_to_string(&f).unwrap();
-        body.push_str("\n# same cosmetic edit\n");
-        std::fs::write(&f, body).unwrap();
-    }
-    let pctx2 = PipelineCtx::new(
-        cfg_a,
-        Some(mock_backends(Arc::new(MockBackend::canned(CANNED)))),
+    let pctx = PipelineCtx::new(
+        cfg_a.clone(),
+        Some(mock_backends(Arc::new(hashing_backend()))),
     )
     .await
     .unwrap();
+    run(&pctx).await.unwrap();
+    let f = proj.join("src/models.py");
+    let mut body = std::fs::read_to_string(&f).unwrap();
+    body.push_str("\nfrom .api import TaskAPI\n");
+    std::fs::write(&f, body).unwrap();
+    let pctx2 = PipelineCtx::new(cfg_a, Some(mock_backends(Arc::new(hashing_backend()))))
+        .await
+        .unwrap();
     run(&pctx2).await.unwrap();
 
-    // B: single full run on the mutated tree.
-    let cfg_b = test_config(&proj_b, &tmp.path().join("tb"), false);
+    // B: single full run on the same mutated tree.
+    let cfg_b = test_config(&proj, &tmp.path().join("tb"), false);
     std::fs::create_dir_all(tmp.path().join("tb")).unwrap();
-    let mock_b = Arc::new(MockBackend::canned(CANNED));
-    let pctx_b = PipelineCtx::new(cfg_b, Some(mock_backends(mock_b)))
+    let pctx_b = PipelineCtx::new(cfg_b, Some(mock_backends(Arc::new(hashing_backend()))))
         .await
         .unwrap();
     run(&pctx_b).await.unwrap();
 
-    assert_eq!(
+    let (a, b) = (
         docs_snapshot(&tmp.path().join("ta/docs")),
         docs_snapshot(&tmp.path().join("tb/docs")),
-        "incremental skip must leave the same doc tree a full run would write"
+    );
+    let mut msg = String::new();
+    for k in a
+        .keys()
+        .chain(b.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        match (a.get(k), b.get(k)) {
+            (None, Some(_)) => msg.push_str(&format!("\n  only in fresh run: {k}")),
+            (Some(_), None) => msg.push_str(&format!("\n  only in incremental run: {k}")),
+            (Some(x), Some(y)) if x != y => msg.push_str(&format!("\n  content differs: {k}")),
+            _ => {}
+        }
+    }
+    assert!(msg.is_empty(), "structural rerun ≡ fresh full run:{msg}");
+}
+
+/// F2 regression: deleted docs must break the cosmetic no-op, not be
+/// reported as "fresh". The written-docs list is the ground truth for
+/// what should exist — a missing entry fails open to a real run.
+#[tokio::test(flavor = "multi_thread")]
+async fn deleted_docs_break_cosmetic_noop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("app");
+    copy_dir(&fixture_dir(), &proj);
+    let cfg = test_config(&proj, tmp.path(), true);
+    let mock = Arc::new(MockBackend::canned(CANNED));
+
+    let pctx = PipelineCtx::new(cfg.clone(), Some(mock_backends(mock.clone())))
+        .await
+        .unwrap();
+    run(&pctx).await.unwrap();
+    let calls_after_first = call_log(&mock).len();
+
+    let out = tmp.path().join("docs");
+    let overview = out.join("1.Overview.md");
+    let deep = out.join("4.Deep-Exploration/Task Management.md");
+    assert!(overview.is_file() && deep.is_file());
+    std::fs::remove_file(&overview).unwrap();
+    std::fs::remove_file(&deep).unwrap();
+
+    // Purely cosmetic source edit — classification still says Cosmetic.
+    let f = proj.join("src/models.py");
+    let mut body = std::fs::read_to_string(&f).unwrap();
+    body.push_str("\n# cosmetic comment\n");
+    std::fs::write(&f, body).unwrap();
+
+    let pctx2 = PipelineCtx::new(cfg, Some(mock_backends(mock.clone())))
+        .await
+        .unwrap();
+    run(&pctx2).await.unwrap();
+
+    assert!(
+        call_log(&mock).len() > calls_after_first,
+        "missing docs must force a real run, not a cosmetic no-op"
+    );
+    assert!(overview.is_file(), "deleted doc must be regenerated");
+    assert!(deep.is_file(), "deleted deep-dive must be regenerated");
+}
+
+/// F5 regression: stale deep-dive cleanup is bounded by the written-docs
+/// record — a `.md` the user dropped into `4.Deep-Exploration/` is not
+/// agentwiki's and must survive regeneration.
+#[tokio::test(flavor = "multi_thread")]
+async fn user_files_in_deep_exploration_survive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("app");
+    copy_dir(&fixture_dir(), &proj);
+    let cfg = test_config(&proj, tmp.path(), true);
+    let mock = Arc::new(MockBackend::canned(CANNED));
+
+    let pctx = PipelineCtx::new(cfg.clone(), Some(mock_backends(mock.clone())))
+        .await
+        .unwrap();
+    run(&pctx).await.unwrap();
+
+    let user_doc = tmp.path().join("docs/4.Deep-Exploration/My Notes.md");
+    std::fs::write(&user_doc, "hand-written notes — do not delete").unwrap();
+
+    // A structural change forces a real rerun through write_docs.
+    let f = proj.join("src/models.py");
+    let mut body = std::fs::read_to_string(&f).unwrap();
+    body.push_str("\nfrom .api import TaskAPI\n");
+    std::fs::write(&f, body).unwrap();
+
+    let pctx2 = PipelineCtx::new(cfg, Some(mock_backends(mock)))
+        .await
+        .unwrap();
+    run(&pctx2).await.unwrap();
+
+    assert!(
+        user_doc.is_file(),
+        "user-authored docs must never be deleted by stale-doc cleanup"
+    );
+}
+
+/// F1 regression: a `research.json` newer than the written-docs record
+/// means the last run saved research but never finished compose+write
+/// (interrupted mid-compose). The gate must refuse to no-op over docs
+/// describing older research.
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_written_docs_break_cosmetic_noop() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("app");
+    copy_dir(&fixture_dir(), &proj);
+    let cfg = test_config(&proj, tmp.path(), true);
+    let mock = Arc::new(MockBackend::canned(CANNED));
+
+    let pctx = PipelineCtx::new(cfg.clone(), Some(mock_backends(mock.clone())))
+        .await
+        .unwrap();
+    run(&pctx).await.unwrap();
+    let calls_after_first = call_log(&mock).len();
+
+    // Simulate "research saved, compose never completed": push
+    // research.json's mtime past the written-docs record.
+    let research = cfg.internal_path.join("research.json");
+    std::fs::File::options()
+        .write(true)
+        .open(&research)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3600))
+        .unwrap();
+
+    let f = proj.join("src/models.py");
+    let mut body = std::fs::read_to_string(&f).unwrap();
+    body.push_str("\n# cosmetic comment\n");
+    std::fs::write(&f, body).unwrap();
+
+    let pctx2 = PipelineCtx::new(cfg, Some(mock_backends(mock.clone())))
+        .await
+        .unwrap();
+    run(&pctx2).await.unwrap();
+
+    assert!(
+        call_log(&mock).len() > calls_after_first,
+        "research newer than the written-docs record must force a real run"
+    );
+}
+
+/// F1 regression, ordering side: a run that fails during compose must
+/// leave neither a manifest claiming the tree nor a written-docs record.
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_compose_writes_no_manifest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let proj = tmp.path().join("app");
+    copy_dir(&fixture_dir(), &proj);
+    let cfg = test_config(&proj, tmp.path(), true);
+
+    let canned: Vec<(String, String)> = CANNED
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let mock = Arc::new(MockBackend::new(move |req| {
+        if req.agent == "overview" {
+            return Err("simulated compose failure".to_string());
+        }
+        Ok(canned
+            .iter()
+            .find(|(k, _)| req.agent == *k)
+            .or_else(|| {
+                canned.iter().find(|(k, _)| {
+                    req.agent
+                        .strip_prefix(k.as_str())
+                        .is_some_and(|rest| rest.starts_with('@'))
+                })
+            })
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| "{}".to_string()))
+    }));
+
+    let pctx = PipelineCtx::new(cfg.clone(), Some(mock_backends(mock)))
+        .await
+        .unwrap();
+    assert!(
+        run(&pctx).await.is_err(),
+        "compose failure must fail the run"
+    );
+    assert!(
+        !manifest::manifest_path(&cfg).is_file(),
+        "manifest must not claim a tree whose docs were never written"
+    );
+    assert!(
+        !agentwiki::output::writer::written_docs_path(&cfg).is_file(),
+        "a failed write must leave no written-docs record"
     );
 }
 

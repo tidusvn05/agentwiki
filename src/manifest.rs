@@ -301,20 +301,63 @@ impl Manifest {
     }
 }
 
+/// sha12 of the normalized absolute output path — keys every per-output
+/// state file (`manifest-<key>.json`, `written-docs-<key>.json`) so repos
+/// with several output trees keep independent bookkeeping.
+pub fn output_key(config: &Config) -> String {
+    let abs = stable_abs(&config.output_path, &config.project_path);
+    hex::encode(Sha256::digest(abs.to_string_lossy().as_bytes()))[..12].to_string()
+}
+
 /// `<internal>/manifest-<sha12>.json`, keyed by the absolute output path
 /// so multi-language/multi-output repos keep independent freshness.
 pub fn manifest_path(config: &Config) -> PathBuf {
-    let out = &config.output_path;
-    let abs = if out.is_absolute() {
-        out.clone()
-    } else {
-        config.project_path.join(out)
-    };
-    let abs = abs.canonicalize().unwrap_or(abs);
-    let digest = hex::encode(Sha256::digest(abs.to_string_lossy().as_bytes()));
     config
         .internal_path
-        .join(format!("manifest-{}.json", &digest[..12]))
+        .join(format!("manifest-{}.json", output_key(config)))
+}
+
+/// Absolute path that is identical whether or not the tail exists —
+/// `canonicalize` alone returns a different string for `./docs` before
+/// vs. after the directory is created, which would fork the manifest
+/// slot (and fire a spurious `env_changed`). Lexically resolves `.`/`..`,
+/// then canonicalizes the deepest existing ancestor and re-appends the
+/// missing tail.
+fn stable_abs(path: &Path, project: &Path) -> PathBuf {
+    use std::path::Component;
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project.join(path)
+    };
+    let mut norm = PathBuf::new();
+    for c in abs.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                norm.pop();
+            }
+            other => norm.push(other.as_os_str()),
+        }
+    }
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut probe = norm.clone();
+    loop {
+        if let Ok(base) = probe.canonicalize() {
+            let mut out = base;
+            for c in tail.iter().rev() {
+                out.push(c);
+            }
+            return out;
+        }
+        match probe.file_name() {
+            Some(name) => {
+                tail.push(name.to_os_string());
+                probe.pop();
+            }
+            None => return norm,
+        }
+    }
 }
 
 /// `git rev-parse HEAD` in `root`; `None` when git or the repo is absent.
@@ -355,13 +398,7 @@ fn env_fingerprint(config: &Config) -> String {
     feed(env!("CARGO_PKG_VERSION"));
     feed(&format!("{:?}", config.mode));
     feed(&format!("{:?}", config.target_language));
-    let out = &config.output_path;
-    let abs = if out.is_absolute() {
-        out.clone()
-    } else {
-        config.project_path.join(out)
-    };
-    feed(&abs.canonicalize().unwrap_or(abs).to_string_lossy());
+    feed(&stable_abs(&config.output_path, &config.project_path).to_string_lossy());
     feed(&config.models.efficient);
     feed(&config.models.powerful);
     feed(&config.limits.daily_cap.to_string());
@@ -512,6 +549,30 @@ mod tests {
         let diff = m1.diff(&m2);
         assert!(diff.env_changed);
         assert!(matches!(classify(&diff), Significance::Structural(_)));
+    }
+
+    /// F3 regression: the manifest slot must not depend on whether the
+    /// output dir already exists — `canonicalize` succeeds only then,
+    /// which forked the hash (`manifest-a….json` vs `manifest-b….json`)
+    /// and fired a spurious `env_changed`.
+    #[test]
+    fn manifest_path_stable_across_output_dir_creation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = project_dir(tmp.path());
+        std::fs::create_dir_all(&root).unwrap();
+        let mut config = Config {
+            project_path: root.clone(),
+            output_path: PathBuf::from("docs"),
+            internal_path: tmp.path().join(".agentwiki"),
+            ..Default::default()
+        };
+        let p1 = manifest_path(&config);
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        let p2 = manifest_path(&config);
+        assert_eq!(p1, p2);
+        // A `./`-laden relative path hashes to the same slot.
+        config.output_path = PathBuf::from("./docs");
+        assert_eq!(manifest_path(&config), p1);
     }
 
     #[test]

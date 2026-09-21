@@ -7,8 +7,9 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineCtx;
 
-/// `(ctx key, output path relative to output dir)`.
-const DOCS: &[(&str, &str)] = &[
+/// `(ctx key, output path relative to output dir)`. Also read by
+/// `agentwiki status` to report per-doc freshness.
+pub const DOCS: &[(&str, &str)] = &[
     ("overview", "1.Overview.md"),
     ("architecture_doc", "2.Architecture.md"),
     ("workflow_doc", "3.Workflow.md"),
@@ -38,17 +39,34 @@ pub async fn write_docs(pctx: &PipelineCtx) -> Result<Vec<PathBuf>> {
 
     // Per-domain deep dives → `4.Deep-Exploration/<Domain>.md`.
     if let Some(Value::Object(map)) = pctx.ctx.get("deep_dive").await {
-        for (domain, v) in map {
+        let mut kept = std::collections::BTreeSet::new();
+        for (domain, v) in &map {
             let md = match v {
                 Value::String(t) => t.clone(),
-                other => serde_json::to_string_pretty(&other).unwrap_or_default(),
+                other => serde_json::to_string_pretty(other).unwrap_or_default(),
             };
-            let name = sanitize_filename(&domain);
+            let name = sanitize_filename(domain);
+            kept.insert(format!("{name}.md"));
             written.push(write_file(
                 out_dir,
                 &format!("4.Deep-Exploration/{name}.md"),
                 &md,
             )?);
+        }
+        // The domain set can shrink between runs — drop deep-dive files
+        // for domains that no longer exist instead of leaving stale docs.
+        let dd = out_dir.join("4.Deep-Exploration");
+        if let Ok(rd) = std::fs::read_dir(&dd) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let stale = p.extension().is_some_and(|x| x == "md")
+                    && p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| !kept.contains(n));
+                if stale && let Err(err) = std::fs::remove_file(&p) {
+                    tracing::warn!("failed to remove stale doc {}: {err}", p.display());
+                }
+            }
         }
     }
 

@@ -3,6 +3,10 @@
 # "docs" + "examples" exclude this repo's own generated output — otherwise the
 # committed docs (docs/vi in particular) leak into the scanned materials and
 # contaminate future runs (observed: vi-named domains in an en run).
+#
+# Keep "docs" excluded: it also covers docs/plans/, which holds design plans
+# (future intent, not current code). Dropping it would feed those plans into
+# the prompts and make generated docs describe things that were never built.
 [scan]
 excluded_dirs = [
   "target", "node_modules", "build", "dist", "venv", ".venv",

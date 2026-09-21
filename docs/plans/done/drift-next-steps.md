@@ -1,5 +1,11 @@
 # `agentwiki drift` — vòng tiếp theo: đóng vòng lặp & độ phủ
 
+> **Status: hoàn thành (cả 3 mục).** Pipeline tự ghi
+> `<output>/agentwiki.claims.json` (`src/pipeline/mod.rs`), report có dòng
+> `coverage:`, `prompts/relationships.md` đã thu hẹp `DataFlow` và
+> `cache::SCHEMA_VERSION` đã bump lên `"2"`.
+> Plan gốc: [`drift-check.md`](drift-check.md).
+
 Tiếp nối commit `bf440e1`. Tính năng `drift` đã chạy đúng và đã review xong
 (0 phantom / 0 reversed trên repo này, phantom & reversed gài vào đều bị bắt).
 

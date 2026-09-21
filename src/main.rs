@@ -37,6 +37,16 @@ async fn main() -> anyhow::Result<()> {
             .await;
             std::process::exit(code);
         }
+        Some(Command::Status(s)) => {
+            let code = agentwiki::status::run(
+                s.project_path.or(args.project_path),
+                s.config.or(args.config),
+                s.output_path.or(args.output_path),
+                s.json,
+            )
+            .await;
+            std::process::exit(code);
+        }
         None => {}
     }
 

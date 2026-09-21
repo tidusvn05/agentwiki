@@ -69,6 +69,15 @@ pub struct Args {
     #[arg(long)]
     pub skip_documentation: bool,
 
+    /// Incremental update: no-op (0 calls) when the manifest diff is
+    /// cosmetic-only; structural changes run the normal pipeline.
+    #[arg(long, conflicts_with = "full")]
+    pub incremental: bool,
+
+    /// Force a full pipeline run; clears `incremental` from config.
+    #[arg(long)]
+    pub full: bool,
+
     /// Print the resolved config and task DAG, then exit.
     #[arg(long)]
     pub dry_run: bool,
@@ -89,6 +98,31 @@ pub enum Command {
     /// Check generated `core_dependencies` claims against a statically
     /// extracted import graph. Read-only; exit 1 only under `--strict`.
     Drift(crate::drift::DriftArgs),
+
+    /// Show documentation freshness: what changed since the last run and
+    /// what the next run would regenerate. Read-only.
+    Status(StatusArgs),
+}
+
+/// `agentwiki status` options.
+#[derive(Debug, Clone, clap::Args)]
+pub struct StatusArgs {
+    /// Repository path to inspect (defaults to top-level `-p` or cwd).
+    #[arg(short = 'p', long)]
+    pub project_path: Option<PathBuf>,
+
+    /// Path to agentwiki.toml (defaults to top-level `-c`).
+    #[arg(short = 'c', long)]
+    pub config: Option<PathBuf>,
+
+    /// Documentation output dir — selects which manifest slot to compare
+    /// against (defaults to top-level `-o`).
+    #[arg(short = 'o', long)]
+    pub output_path: Option<PathBuf>,
+
+    /// Print the machine-readable report to stdout.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `agentwiki doctor` options.
@@ -156,6 +190,8 @@ impl From<&Args> for CliOverrides {
             agentic: a.agentic,
             no_cache: a.no_cache,
             force_regenerate: a.force_regenerate,
+            incremental: a.incremental,
+            full: a.full,
             skip_research: a.skip_research,
             skip_documentation: a.skip_documentation,
         }

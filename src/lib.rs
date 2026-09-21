@@ -32,12 +32,14 @@ pub mod diag;
 pub mod doctor;
 pub mod drift;
 pub mod error;
+pub mod manifest;
 pub mod output;
 pub mod pipeline;
 pub mod progress;
 pub mod prompt;
 pub mod quota;
 pub mod scanner;
+pub mod status;
 pub mod sys;
 pub mod util;
 

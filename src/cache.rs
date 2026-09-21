@@ -1,5 +1,10 @@
-//! Content-hash cache: `sha256(prompt ‖ model ‖ backend ‖ SCHEMA_VERSION)`
-//! → `.agentwiki/cache/<key>.json`.
+//! Content-hash cache: `sha256(prompt ‖ model ‖ backend ‖ inputs ‖
+//! SCHEMA_VERSION)` → `.agentwiki/cache/<key>.json`.
+//!
+//! `inputs` covers what the agent can read but the prompt does not embed
+//! — in agentic mode the file-content fingerprint (per-dir subtree for
+//! `dir_summary`, whole-repo otherwise). In embedded mode the prompt is
+//! the complete input, so `inputs` stays empty.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -10,7 +15,8 @@ use sha2::{Digest, Sha256};
 use crate::error::{Error, Result};
 
 /// Bumped when prompt/schema semantics change; part of every cache key.
-pub const SCHEMA_VERSION: &str = "2";
+/// v3: PerDomain dep projection + agentic-mode input fingerprints.
+pub const SCHEMA_VERSION: &str = "3";
 
 /// On-disk record for one cached call.
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,14 +61,18 @@ impl Cache {
         }
     }
 
-    /// The cache key for a call.
-    pub fn key(prompt: &str, model: &str, backend: &str) -> String {
+    /// The cache key for a call. `inputs` is a content fingerprint of
+    /// anything the agent may read beyond the prompt itself (agentic
+    /// mode); pass `""` when the prompt is the complete input.
+    pub fn key(prompt: &str, model: &str, backend: &str, inputs: &str) -> String {
         let mut h = Sha256::new();
         h.update(prompt.as_bytes());
         h.update(b"\x00");
         h.update(model.as_bytes());
         h.update(b"\x00");
         h.update(backend.as_bytes());
+        h.update(b"\x00");
+        h.update(inputs.as_bytes());
         h.update(b"\x00");
         h.update(SCHEMA_VERSION.as_bytes());
         hex::encode(h.finalize())

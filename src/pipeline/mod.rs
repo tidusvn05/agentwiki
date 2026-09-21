@@ -25,6 +25,9 @@ pub struct PipelineCtx {
     pub config: Config,
     /// Phase-0 scan output.
     pub scan: ScanData,
+    /// Fingerprint of the scanned inputs — feeds the incremental gate
+    /// and agentic-mode cache keys.
+    pub manifest: crate::manifest::Manifest,
     /// Research/compose result store.
     pub ctx: ResearchContext,
     /// Content-hash cache.
@@ -88,6 +91,7 @@ impl PipelineCtx {
         backends: Option<HashMap<BackendKind, Arc<dyn AgentBackend>>>,
     ) -> Result<Arc<Self>> {
         let scan = scanner::scan(&config)?;
+        let manifest = crate::manifest::Manifest::build(&scan, &config);
 
         let internal = config.internal_path.clone();
         std::fs::create_dir_all(&internal).map_err(|e| Error::io(&internal, e))?;
@@ -108,6 +112,7 @@ impl PipelineCtx {
             progress: crate::progress::Progress::new(),
             cancel: CancellationToken::new(),
             ctx: ResearchContext::new(),
+            manifest,
             empty_cwd,
             backends,
             scan,
@@ -201,10 +206,46 @@ async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
         let path = pctx.config.internal_path.join("research.json");
         pctx.load_research(&path).await?;
     } else {
+        // Incremental gate: with a usable prior manifest, a purely
+        // cosmetic diff means the stored research + docs already reflect
+        // the current tree — a 0-call no-op. The manifest is only
+        // overwritten by a real run, so the pending cosmetic delta stays
+        // visible to `agentwiki status` instead of being absorbed.
+        if pctx.config.incremental
+            && let Some(prev) =
+                crate::manifest::Manifest::load(&crate::manifest::manifest_path(&pctx.config))
+        {
+            let diff = prev.diff(&pctx.manifest);
+            match crate::manifest::classify(&diff) {
+                crate::manifest::Significance::Cosmetic if docs_reusable(pctx) => {
+                    let n = diff.changed_files.len();
+                    println!(
+                        "incremental: no structural changes — docs are fresh \
+                         ({n} cosmetic file change(s) pending; see `agentwiki status`, \
+                         run without `--incremental` to rebuild)"
+                    );
+                    return Ok(());
+                }
+                crate::manifest::Significance::Cosmetic => {
+                    tracing::info!("incremental: cosmetic diff but artifacts missing — full run");
+                }
+                crate::manifest::Significance::Structural(reasons) => {
+                    tracing::info!(?reasons, "incremental: structural changes detected");
+                }
+            }
+        }
         research(pctx).await?;
         // Persist research so `--skip-research` can reuse it later.
         let path = pctx.config.internal_path.join("research.json");
         pctx.ctx.save(&path).await?;
+        // The manifest pairs with research.json — record exactly what
+        // the fresh research was computed from.
+        if let Err(e) = pctx
+            .manifest
+            .save(&crate::manifest::manifest_path(&pctx.config))
+        {
+            tracing::warn!("failed to write manifest: {e}");
+        }
     }
 
     if pctx.cancel.is_cancelled() {
@@ -234,6 +275,12 @@ async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
         if let Err(e) = crate::drift::claims::export_claims(&research, &dest) {
             tracing::warn!("failed to write {}: {e}", dest.display());
         }
+        // Safety net after an incremental update: re-check the fresh
+        // claims against the import graph. Warn-only — strict gating
+        // belongs to CI's own `drift --strict` step.
+        if pctx.config.incremental {
+            drift_verify_notice(pctx);
+        }
     }
 
     let stats = pctx.stats.lock().await;
@@ -244,6 +291,45 @@ async fn run_pipeline(pctx: &Arc<PipelineCtx>) -> Result<()> {
         "pipeline complete"
     );
     Ok(())
+}
+
+/// Cosmetic skip is only valid when the artifacts it preserves actually
+/// exist — otherwise fall through to a real run.
+fn docs_reusable(pctx: &PipelineCtx) -> bool {
+    pctx.config.internal_path.join("research.json").is_file() && pctx.config.output_path.is_dir()
+}
+
+/// Post-run drift check (warn-only): reloads the claims file just written
+/// and reports gating findings. Never affects the exit status.
+fn drift_verify_notice(pctx: &PipelineCtx) {
+    let claims_path = pctx
+        .config
+        .output_path
+        .join(crate::drift::claims::CLAIMS_FILENAME);
+    let Ok(claims) = crate::drift::claims::load_claims(&claims_path) else {
+        return;
+    };
+    let test_globs: Vec<glob::Pattern> = pctx
+        .config
+        .drift
+        .test_globs
+        .iter()
+        .filter_map(|p| glob::Pattern::new(p).ok())
+        .collect();
+    let out = crate::drift::analyze(
+        &pctx.config.drift,
+        &pctx.scan.root,
+        &pctx.scan,
+        &claims,
+        &test_globs,
+    );
+    let n = out.findings.iter().filter(|f| f.class.is_gating()).count();
+    if n > 0 {
+        println!(
+            "drift: {n} phantom/reversed claim(s) in the fresh docs — \
+             run `agentwiki drift` for detail"
+        );
+    }
 }
 
 /// Phase 1 — run research specs level by level (deps before dependents).

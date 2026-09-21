@@ -1,5 +1,28 @@
 # AgentWiki — Implementation Plan
 
+> **Status: hoàn thành (M0–M6), không maintain.** Viết trước commit đầu tiên
+> (`dba8c16`); ship xong ở v0.5.0. Giữ lại vì §2 (port gì / bỏ gì từ
+> deepwiki-rs) và §14 (rủi ro) là context không suy ra được từ code.
+>
+> **Không dùng file này làm mô tả kiến trúc hiện tại** — nó đã lệch đáng kể.
+> Kiến trúc hiện tại: [`docs/en/2.Architecture.md`](../../en/2.Architecture.md)
+> (generated, verify bằng `agentwiki drift`).
+>
+> Các điểm đã biết là lệch: §4 liệt kê `pipeline/{orchestrator,phases}.rs`,
+> `output/doctree.rs`, `verify/*` (không tồn tại) và thiếu hẳn `src/drift/**`,
+> `doctor.rs`, `diag.rs`, `progress.rs`, `sys.rs`, `agent/reports/*`;
+> §5–§6 thiếu field thêm về sau (`AgentSpec.materials/phase/exec`,
+> `AgentRequest.agent/json_schema`, `ExecKind::Deterministic`); §10 thiếu
+> `[profiles.*]` và `[drift]`; §15 đã chốt hết; `agentwiki.toml.example` ở §4
+> không tồn tại.
+>
+> **Defect thiết kế đã biết — đừng port lại:** §9 định nghĩa cache key là
+> `sha256(prompt ‖ model ‖ backend ‖ SCHEMA_VERSION)`. Công thức này đúng với
+> mode `embedded` (§8) nhưng **sai với `agentic`**: ở mode đó code không nằm
+> trong prompt, nên sửa code không đổi key → cache hit → docs stale âm thầm.
+> Plan định nghĩa hai mode ở §8 rồi định nghĩa cache ở §9 mà không nối lại.
+> Đang xử lý trong [`../active/incremental-update.md`](../active/incremental-update.md).
+
 > Rewrite of [deepwiki-rs (Litho)](https://github.com/sopaco/deepwiki-rs) as a
 > CLI-agent-native documentation generator, **in Rust**. Instead of an
 > OpenAI-compatible HTTP API, each pipeline agent is backed by an
@@ -71,7 +94,7 @@ Không dùng reqwest/HTTP stack — không cần.
 
 ```
 agentwiki/
-├── IMPLEMENTATION_PLAN.md          # file này
+├── IMPLEMENTATION_PLAN.md          # file này (nay: docs/plans/done/2025-implementation-v1.md)
 ├── Cargo.toml
 ├── rustfmt.toml
 ├── clippy.toml

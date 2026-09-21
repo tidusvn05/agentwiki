@@ -79,8 +79,15 @@ State, cache, and audit logs live in `.agentwiki/` (gitignored).
 ### Operations
 
 - **Content-hash cache** — each call is cached by
-  `sha256(prompt‖model‖backend)` under `.agentwiki/cache/`. Interrupt any
-  time; a rerun reuses everything that already succeeded.
+  `sha256(prompt‖model‖backend‖inputs)` under `.agentwiki/cache/`.
+  Interrupt any time; a rerun reuses everything that already succeeded.
+- **Incremental updates** — `--incremental` fingerprints the tree each run
+  (`.agentwiki/manifest-*.json`): cosmetic-only diffs become a 0-call
+  no-op, structural diffs run the cache-accelerated pipeline. Per-domain
+  agents only see their own domain's research slice, so unrelated edits
+  don't churn their cache keys.
+- **`agentwiki status`** — freshness report: what changed since the last
+  run, whether the next run is incremental or full, per-doc age.
 - **Safe to interrupt** — `Ctrl-C` cancels cooperatively, kills in-flight
   CLI children, exits `130`. A second `Ctrl-C` force-quits.
 - **Live progress** — spinner bar shows `[done/total]` and running agents
@@ -203,8 +210,47 @@ Useful flags:
 | `--dry-run` | print resolved config + task DAG, exit |
 | `--skip-research` | reuse `.agentwiki/research.json`, only recompose |
 | `--skip-documentation` | stop after research |
+| `--incremental` | no-op (0 calls) when only file contents changed since the last run |
+| `--full` | force a full run, overriding `incremental` from config |
 | `--force-regenerate` / `--no-cache` | cache controls |
 | `-v … -vvv` | log verbosity (`warn` default) |
+
+### `agentwiki status`
+
+Read-only freshness report — the counterpart to `doctor` (environment)
+and `drift` (correctness). It diffs the recorded manifest of the last run
+against a fresh scan and tells you *before spending calls* whether the
+next run would be incremental or full:
+
+```sh
+agentwiki status           # human report, exit 0
+agentwiki status --json    # machine-readable report
+agentwiki status -o docs/en   # inspect a specific output tree
+```
+
+```text
+manifest: .agentwiki/manifest-9f2c… .json (2026-09-21T08:12Z)
+git: documented at d4e11b7, 3 commit(s) since
+research.json: 2d ago
+
+classification: cosmetic
+files: +0 −0 ~2 · dirs: +0 −0 · import edges: +0 −0
+cosmetic-only edits pending in: src/drift
+→ `agentwiki --incremental` would no-op (0 calls); a plain run rewrites from cache
+
+docs:
+  1.Overview.md — fresh (2d ago)
+  4.Deep-Exploration/… .md — fresh (2d ago)
+```
+
+Classification is fail-open: new/removed files or dirs, import-graph
+edge changes, or a changed generation environment (language, models,
+prompts, scan config) all count as **structural** → the next `--incremental`
+run does a real (cache-accelerated) pipeline run. Pure content edits count
+as **cosmetic** → `--incremental` becomes a 0-call no-op and `status` shows
+the edited dirs as pending until the next structural run. Enable the mode
+with `--incremental` or `incremental = true` in `agentwiki.toml`; without
+it, behavior is unchanged.
 
 ### `agentwiki doctor`
 
@@ -277,6 +323,7 @@ global defaults) — all keys optional:
 target_language = "vi"        # en zh ja ko de fr ru vi
 mode = "agentic"              # embedded | agentic
 max_parallels = 4
+incremental = true            # cosmetic diffs → 0-call no-op (see `status`)
 
 [models]
 efficient = "devin:swe-2-medium"
@@ -344,7 +391,8 @@ should chase references itself.
 - **Compose**: LLM editors + deterministic renderers → the doc tree.
 - **Verify**: file integrity + mermaid checks + summary report.
 
-Design notes: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+Design notes: [docs/plans/](docs/plans/) — active plans and the shipped
+design history.
 
 ## Development
 

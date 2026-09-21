@@ -233,6 +233,9 @@ pub struct Config {
     pub no_cache: bool,
     /// Ignore cached values but record fresh results.
     pub force_regenerate: bool,
+    /// Incremental mode: skip the run entirely when the manifest diff
+    /// is cosmetic-only (see `docs/plans/active/incremental-update.md`).
+    pub incremental: bool,
     /// Models.
     pub models: ModelsConfig,
     /// Limits.
@@ -261,6 +264,7 @@ impl Default for Config {
             skip_documentation: false,
             no_cache: false,
             force_regenerate: false,
+            incremental: false,
             models: ModelsConfig::default(),
             limits: LimitsConfig::default(),
             scan: ScanConfig::default(),
@@ -287,6 +291,7 @@ struct TomlConfig {
     skip_documentation: Option<bool>,
     no_cache: Option<bool>,
     force_regenerate: Option<bool>,
+    incremental: Option<bool>,
     models: Option<ModelsPartial>,
     limits: Option<LimitsPartial>,
     scan: Option<ScanPartial>,
@@ -355,6 +360,10 @@ pub struct CliOverrides {
     pub no_cache: bool,
     /// `--force-regenerate`
     pub force_regenerate: bool,
+    /// `--incremental`
+    pub incremental: bool,
+    /// `--full` — explicit override clearing `incremental` from config.
+    pub full: bool,
     /// `--skip-research`
     pub skip_research: bool,
     /// `--skip-documentation`
@@ -446,6 +455,10 @@ impl Config {
         cfg.force_regenerate |= cli.force_regenerate;
         cfg.skip_research |= cli.skip_research;
         cfg.skip_documentation |= cli.skip_documentation;
+        cfg.incremental |= cli.incremental;
+        if cli.full {
+            cfg.incremental = false;
+        }
 
         // Auto-detect: model tiers nobody configured fall back to the first
         // agent CLI on PATH (devin → codex → claude). Nothing found keeps
@@ -502,6 +515,9 @@ impl Config {
         }
         if let Some(v) = t.force_regenerate {
             self.force_regenerate = v;
+        }
+        if let Some(v) = t.incremental {
+            self.incremental = v;
         }
         if let Some(m) = &t.models {
             if let Some(v) = &m.efficient {

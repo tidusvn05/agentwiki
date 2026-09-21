@@ -11,7 +11,7 @@ use serde_json::Value;
 use super::context::ResearchContext;
 use super::materials;
 use super::registry;
-use super::spec::{self, AgentSpec, ExecKind, FanTarget, Material};
+use super::spec::{self, AgentSpec, ExecKind, FanOut, FanTarget, Material};
 use crate::backend::{AgentRequest, BackendKind, TokenUsage, tail};
 use crate::cache::Cache;
 use crate::config::{Config, Mode, ModelTier};
@@ -154,7 +154,11 @@ async fn run_instance_inner(
         Mode::Embedded => pctx.empty_cwd.clone(),
     };
 
-    let cache_key = Cache::key(&prompt, &model_str, kind.as_str());
+    let cache_inputs = match pctx.config.mode {
+        Mode::Embedded => String::new(),
+        Mode::Agentic => agentic_inputs(spec, target, pctx),
+    };
+    let cache_key = Cache::key(&prompt, &model_str, kind.as_str(), &cache_inputs);
     if let Some(hit) = pctx.cache.get(&cache_key) {
         match parse_output(spec, &hit.text, key) {
             Ok(v) => {
@@ -302,7 +306,7 @@ async fn build_prompt(
 ) -> Result<String> {
     let tmpl = pctx.prompts.load(spec.prompt_tmpl)?;
     let mut vars: HashMap<&str, String> = HashMap::new();
-    let materials = build_materials(spec, pctx).await;
+    let materials = build_materials(spec, target, pctx).await;
     let cap = pctx.config.limits.materials_char_cap;
     vars.insert("materials", materials.chars().take(cap).collect::<String>());
     vars.insert("custom", custom_block(spec, target, pctx).await);
@@ -315,12 +319,32 @@ async fn build_prompt(
     Ok(render(&tmpl, &vars))
 }
 
+/// Agentic-mode cache-key input: the file content an agent may read that
+/// the prompt never embeds. `dir_summary@<dir>` scopes to that directory's
+/// subtree; every other agent gets the whole-repo fingerprint — with a
+/// repo-root cwd it can read anything, so any change must invalidate it.
+fn agentic_inputs(spec: &AgentSpec, target: Option<&FanTarget>, pctx: &PipelineCtx) -> String {
+    if spec.fan_out == Some(FanOut::PerDir)
+        && let Some(d) = target.and_then(|t| t.dir.as_ref())
+    {
+        let rel = d.rel_path.to_string_lossy();
+        let rel = if rel.is_empty() { "." } else { rel.as_ref() };
+        return pctx.manifest.subtree_fingerprint(rel);
+    }
+    pctx.manifest.fingerprint_all()
+}
+
 /// `{{materials}}` — dep results + scan materials.
-async fn build_materials(spec: &AgentSpec, pctx: &Arc<PipelineCtx>) -> String {
+async fn build_materials(
+    spec: &AgentSpec,
+    target: Option<&FanTarget>,
+    pctx: &Arc<PipelineCtx>,
+) -> String {
     let mut s = String::new();
     // Dep results first — they're the freshest context.
     for dep in spec.deps {
         if let Some(v) = pctx.ctx.get(dep).await {
+            let v = project_dep(spec, dep, target, &v);
             s.push_str(&materials::dep_block(registry::display_name(dep), &v));
         }
     }
@@ -349,6 +373,55 @@ async fn build_materials(spec: &AgentSpec, pctx: &Arc<PipelineCtx>) -> String {
         }
     }
     s
+}
+
+/// Narrow a dep's stored output to the slice relevant to a fan-out
+/// target. PerDomain instances only see their own domain's entry — one
+/// domain's text churn then busts only that domain's calls, not the
+/// whole fan-out. Specs without a projection rule get the full value
+/// (unchanged behavior).
+fn project_dep(spec: &AgentSpec, dep: &str, target: Option<&FanTarget>, v: &Value) -> Value {
+    let (Some(FanOut::PerDomain), Some(t)) = (spec.fan_out, target) else {
+        return v.clone();
+    };
+    if dep == "domain_modules" {
+        return project_domain_modules(t, v);
+    }
+    // PerDomain-aggregated deps are stored as `{domain: result}` — hand
+    // the instance its own entry.
+    if let Some(entry) = v.get(&t.key) {
+        return entry.clone();
+    }
+    v.clone()
+}
+
+/// `domain_modules` → `{domain: <this domain>, other_domains: [names]}`.
+/// The bare name list keeps "what modules exist" context without
+/// re-sending every domain's full description to every instance.
+/// The stored entry is preferred over the target's copy so the block
+/// reflects what downstream consumers saw.
+fn project_domain_modules(t: &FanTarget, v: &Value) -> Value {
+    let arr = v.get("domain_modules").and_then(Value::as_array);
+    let entry = arr
+        .and_then(|arr| {
+            arr.iter()
+                .find(|m| m.get("name").and_then(Value::as_str) == Some(t.key.as_str()))
+                .cloned()
+        })
+        .or_else(|| t.domain.as_ref().map(|d| serde_json::json!(d)));
+    let Some(domain) = entry else {
+        return v.clone();
+    };
+    let others: Vec<Value> = arr
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("name").and_then(Value::as_str))
+                .filter(|n| *n != t.key)
+                .map(|n| Value::String(n.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    serde_json::json!({ "domain": domain, "other_domains": others })
 }
 
 /// `{{custom}}` — per-instance data block.
@@ -514,6 +587,145 @@ async fn record(pctx: &PipelineCtx, agent: &str, kind: BackendKind, model: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::reports::DomainModule;
+    use crate::backend::AgentBackend;
+    use serde_json::json;
+
+    fn domain(name: &str, desc: &str) -> DomainModule {
+        DomainModule {
+            name: name.to_string(),
+            description: desc.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn per_domain_spec(name: &str) -> AgentSpec {
+        registry::all_specs()
+            .into_iter()
+            .find(|s| s.name == name)
+            .unwrap()
+    }
+
+    #[test]
+    fn project_dep_scopes_domain_modules_to_target() {
+        let spec = per_domain_spec("key_module");
+        let v = json!({
+            "domain_modules": [
+                {"name": "A", "description": "alpha"},
+                {"name": "B", "description": "beta"}
+            ],
+            "domain_relations": [{"from_domain": "A", "to_domain": "B"}]
+        });
+        let t = FanTarget {
+            key: "A".to_string(),
+            dir: None,
+            domain: Some(domain("A", "alpha")),
+        };
+        let p = project_dep(&spec, "domain_modules", Some(&t), &v);
+        assert_eq!(p["domain"]["name"], "A");
+        // Other domains degrade to a name list — their prose can't churn
+        // this instance's cache key.
+        assert_eq!(p["other_domains"], json!(["B"]));
+        assert!(p.get("domain_relations").is_none());
+    }
+
+    #[test]
+    fn project_dep_slices_per_domain_map() {
+        let spec = per_domain_spec("deep_dive");
+        let v = json!({"A": {"report": 1}, "B": {"report": 2}});
+        let t = FanTarget {
+            key: "A".to_string(),
+            dir: None,
+            domain: Some(domain("A", "alpha")),
+        };
+        assert_eq!(
+            project_dep(&spec, "key_module", Some(&t), &v),
+            json!({"report": 1})
+        );
+    }
+
+    #[test]
+    fn project_dep_passthrough() {
+        // Non-fan-out spec → dep passes through whole.
+        let global = registry::all_specs()
+            .into_iter()
+            .find(|s| s.name == "overview")
+            .unwrap();
+        let v = json!({"domain_modules": [{"name": "A"}]});
+        let t = FanTarget {
+            key: "A".to_string(),
+            dir: None,
+            domain: Some(domain("A", "alpha")),
+        };
+        assert_eq!(project_dep(&global, "domain_modules", Some(&t), &v), v);
+
+        // PerDomain spec, dep object without the target's key → whole.
+        let spec = per_domain_spec("deep_dive");
+        let sys = json!({"project_name": "x", "confidence": 8});
+        assert_eq!(project_dep(&spec, "system_context", Some(&t), &sys), sys);
+    }
+
+    /// Mảnh 0's payoff: editing domain B's `domain_modules` entry must not
+    /// change `key_module@A`'s prompt — that is what makes per-domain cache
+    /// reuse possible.
+    #[tokio::test]
+    async fn per_domain_prompt_stable_when_other_domain_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = Config {
+            project_path: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixture-app"),
+            output_path: tmp.path().join("docs"),
+            internal_path: tmp.path().join(".agentwiki"),
+            ..Default::default()
+        };
+        config.models.efficient = "mock".to_string();
+        config.models.powerful = "mock".to_string();
+        config.scan.git_tracked_only = false;
+        let mock: Arc<dyn AgentBackend> = Arc::new(crate::backend::mock::MockBackend::canned(&[]));
+        let pctx = PipelineCtx::new(config, Some(HashMap::from([(BackendKind::Mock, mock)])))
+            .await
+            .unwrap();
+
+        pctx.ctx
+            .insert("system_context", json!({"project_name": "fixture"}))
+            .await;
+        let spec = per_domain_spec("key_module");
+        let target = |desc: &str| FanTarget {
+            key: "A".to_string(),
+            dir: None,
+            domain: Some(domain("A", desc)),
+        };
+
+        let v1 = json!({"domain_modules": [
+            {"name": "A", "description": "alpha"},
+            {"name": "B", "description": "beta v1"}
+        ]});
+        pctx.ctx.insert("domain_modules", v1).await;
+        let p1 = build_prompt(&spec, Some(&target("alpha")), &pctx)
+            .await
+            .unwrap();
+
+        let v2 = json!({"domain_modules": [
+            {"name": "A", "description": "alpha"},
+            {"name": "B", "description": "beta v2 — rewritten"}
+        ]});
+        pctx.ctx.insert("domain_modules", v2).await;
+        let p2 = build_prompt(&spec, Some(&target("alpha")), &pctx)
+            .await
+            .unwrap();
+        assert_eq!(p1, p2, "B's churn must not reach A's prompt");
+
+        // A's own entry still drives the prompt.
+        let v3 = json!({"domain_modules": [
+            {"name": "A", "description": "alpha — rewritten"},
+            {"name": "B", "description": "beta v2 — rewritten"}
+        ]});
+        pctx.ctx.insert("domain_modules", v3).await;
+        let p3 = build_prompt(&spec, Some(&target("alpha — rewritten")), &pctx)
+            .await
+            .unwrap();
+        assert_ne!(p1, p3, "A's own entry must reach A's prompt");
+    }
 
     #[test]
     fn extract_strict() {

@@ -1,5 +1,9 @@
 # Kế hoạch: `agentwiki drift` — drift check ít nhiễu giữa generated edges và import edges
 
+> **Status: hoàn thành (M0–M7).** Toàn bộ `src/drift/**` đã ship theo plan này.
+> Vòng tiếp theo: [`drift-next-steps.md`](drift-next-steps.md).
+> Cách dùng hiện tại xem README (`### agentwiki drift`), không xem file này.
+
 ## Context
 
 Câu hỏi gốc: *"Opt-in drift check nghe hợp lý, cho tới khi generated edges và import edges lệch nhau vì lý do vớ vẩn. Lọc false positive thế nào trước khi CI noise thắng?"*

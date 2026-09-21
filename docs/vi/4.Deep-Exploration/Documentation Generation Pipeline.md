@@ -1,89 +1,106 @@
-# Documentation Generation Pipeline — Deep Dive
+# Deep-dive: Documentation Generation Pipeline
 
-## 1. Mục đích module
+## 1. Mục đích của module
 
-**Documentation Generation Pipeline** là domain nghiệp vụ cốt lõi (importance 9.5) của agentwiki: nó điều phối toàn bộ luồng **Preprocess → Research → Compose → Write → Verify** để biến một source repository thành bộ tài liệu kiến trúc dạng C4 (Overview, Architecture, Workflow, Deep-Exploration, Boundary, Database). Module sở hữu:
+`Documentation Generation Pipeline` là **core business domain** của agentwiki — nơi điều phối toàn bộ hành trình biến một source repository thành bộ tài liệu kiến trúc kiểu C4. Module chịu trách nhiệm:
 
-- `PipelineCtx` — trạng thái chia sẻ được bọc trong `Arc`, truyền cho mọi spec instance.
-- Giới hạn concurrency qua `tokio::sync::Semaphore`.
-- Cooperative cancellation qua `CancellationToken`.
-- Run lock, incremental gate (manifest diff), và `RunStats` cho báo cáo tổng kết.
+- Tuần tự hóa 5 giai đoạn: **Preprocess → Research → Compose → Write → Verify**.
+- Sở hữu `PipelineCtx` — shared context được bọc trong `Arc` và truyền cho mọi spec instance.
+- Giới hạn concurrency qua `Semaphore`, xử lý cooperative cancellation qua `CancellationToken`.
+- Áp dụng cổng incremental (manifest diff) và khóa chống chạy đôi (`run.lock`).
+- Thu thập thống kê run (`RunStats`) cho báo cáo tổng kết.
 
-Module **không** tự gọi LLM và cũng không tự parse AST — mọi inference đều đi qua trait `AgentBackend` (subprocess tới `devin`/`claude`/`codex`), và pipeline chỉ orchestrate: quét repo, lập lịch DAG, ghi kết quả, kiểm tra.
+Về mặt kiến trúc, module là **điểm duy nhất** nối CLI surface với các domain còn lại: scanner (Phase 0), agent orchestration (Research/Compose), backend abstraction (subprocess CLIs), governance (cache/quota/manifest), và output/verify (deterministic renderers).
 
 ## 2. Cấu trúc nội bộ
 
-Module gồm ba phần, đúng như `code_paths` đã khai báo:
+Module gồm 3 sub-module:
 
-| Phần | File | Vai trò |
+| Sub-module | Vị trí | Vai trò |
 |---|---|---|
-| Pipeline Orchestrator | `src/pipeline/mod.rs` | `PipelineCtx`, `run`, `run_pipeline`, `run_level_order`, `acquire_run_lock`, `dry_run_report` |
-| CLI Entry & Command Surface | `src/main.rs`, `src/cli.rs` | Parse args (clap), phân tuyến subcommand read-only, cài signal handler |
-| Deterministic Output & Verification | `src/output/{mod,writer,verify,summary,boundary,database}.rs` | Ghi doc tree, render doc không-LLM, verify artifact |
+| Pipeline Orchestrator | `src/pipeline/mod.rs` (~490 dòng) | `PipelineCtx`, `run`, `run_pipeline`, `run_level_order`, `dry_run_report`, run lock |
+| CLI Entry & Command Surface | `src/main.rs`, `src/cli.rs` | Parse args, dispatch subcommands, signal handling, tracing init |
+| Deterministic Output & Verification | `src/output/` | `write_docs`, `boundary_doc`, `database_doc`, `write_summary`, `verify` |
 
-### 2.1 `PipelineCtx` — shared run context
-
-[mod.rs:22-53](file:///home/ruan/datspace/agentwiki/src/pipeline/mod.rs)
-
-`PipelineCtx` gom mọi thứ một spec instance cần:
-
-- `config` — config đã resolve (CLI > `agentwiki.toml` > defaults).
-- `scan` — `ScanData` của Phase 0 (file set, directory structure, README).
-- `manifest: Option<Manifest>` — fingerprint của input; chỉ build khi `--incremental` hoặc `Mode::Agentic` vì chi phí hash mọi file + import graph không nhỏ.
-- `ctx: ResearchContext` — kho kết quả research/compose theo key.
-- `cache`, `quota`, `prompts` — bộ ba governance tại ranh giới "trả phí": content-hash cache, daily cap + `calls.jsonl`, prompt template loader.
-- `semaphore` — bound số CLI call đồng thời (`config.max_parallels`).
-- `stats: Mutex<RunStats>` — `cache_hits`, `cli_calls`, `saved_secs`, per-spec timings.
-- `empty_cwd` — cwd "sạch" cho embedded-mode calls (agent CLI không tự đọc repo).
-- `progress`, `cancel` — UI tiến trình và token hủy hợp tác.
-- `backends: HashMap<BackendKind, Arc<dyn AgentBackend>>` — backend đã construct, injectable cho test (`MockBackend`).
-
-`PipelineCtx::new` (dòng 91–127) chạy `scanner::scan` **đồng bộ**, build manifest có điều kiện, tạo `<internal>/` và `empty-cwd/`, rồi construct backend mặc định từ `models.efficient`/`models.powerful` qua `BackendKind::parse` — chỉ những kind thực sự được config tham chiếu mới được khởi tạo.
-
-### 2.2 Run lock
-
-`acquire_run_lock` (dòng 162–193) dùng `create_new` trên `<internal>/run.lock` chứa pid:
-
-- Lock tồn tại + pid còn sống (`crate::sys::pid_alive`) → `Error::AlreadyRunning`.
-- Lock stale (pid chết hoặc file không đọc được) → reclaim, retry một lần.
-- `RunLock` implement `Drop` để xóa file khi kết thúc.
-
-Đây là cơ chế chống double-run; các subcommand read-only (`doctor`, `drift`, `status`) cố tình **không** đi qua đường này.
-
-### 2.3 Output stage (`src/output`)
-
-`mod.rs` re-export: `boundary_doc`, `database_doc`, `write_summary`, `verify`/`VerifyReport`, `write_docs`.
-
-- **`writer.rs`**: ánh xạ cố định `DOCS` từ ctx key → đường dẫn tương đối (`"overview" → "1.Overview.md"`, …), cộng thêm `4.Deep-Exploration/<domain>.md` per domain. Mọi ghi đều qua `util::write_atomic`. Danh sách file đã ghi được lưu vào `<internal>/written-docs-<sha12>.json` — **ghi sau cùng** để mtime của nó làm bằng chứng "write hoàn tất sau `research.json`", phục vụ `docs_reusable`. Stale deep-dive cleanup chỉ xóa file nằm trong danh sách lần trước mà lần này không ghi — file user tự thêm vào output dir không bị đụng.
-- **`verify.rs`**: post-write check không bao giờ fail pipeline. Kiểm tra file kỳ vọng tồn tại/non-empty, đếm + heuristic-check mermaid block (header hợp lệ, body non-empty, không unterminated), và chạy `mermaid-fixer -d <out> --dry-run` nếu cài đặt và `config.verify.mermaid_fixer` bật. Kết quả gói trong `VerifyReport` (serialize được).
-- **`boundary.rs` / `database.rs`**: renderer deterministic cho `5.Boundary-Interfaces.md` và `6.Database-Overview.md` — không tốn LLM call.
-- **`summary.rs`**: `write_summary` xuất markdown summary + `SummaryJson` từ `RunStats` và `VerifyReport`.
-
-## 3. Key interfaces
+### `PipelineCtx` — shared run context
 
 ```rust
-// Điểm vào chính (re-export qua lib.rs)
-pub struct PipelineCtx { /* ... */ }
-impl PipelineCtx {
-    pub async fn new(config: Config,
-        backends: Option<HashMap<BackendKind, Arc<dyn AgentBackend>>>)
-        -> Result<Arc<Self>>;
-    pub fn backend(&self, kind: BackendKind) -> Result<Arc<dyn AgentBackend>>;
+pub struct PipelineCtx {
+    pub config: Config,
+    pub scan: ScanData,
+    pub manifest: Option<Manifest>,
+    pub ctx: ResearchContext,
+    pub cache: Cache,
+    pub quota: Quota,
+    pub prompts: PromptLoader,
+    pub semaphore: Semaphore,
+    pub stats: Mutex<RunStats>,
+    pub empty_cwd: PathBuf,
+    pub progress: Progress,
+    pub cancel: CancellationToken,
+    backends: HashMap<BackendKind, Arc<dyn AgentBackend>>,
 }
-pub async fn run(pctx: &Arc<PipelineCtx>) -> Result<()>;
-pub fn dry_run_report(config: &Config, scan: &ScanData) -> String;
-
-// Output
-pub async fn write_docs(pctx: &PipelineCtx) -> Result<Vec<PathBuf>>;
-pub async fn verify(pctx: &PipelineCtx) -> Result<VerifyReport>;
-pub async fn write_summary(pctx: &PipelineCtx, report: &VerifyReport, elapsed: Duration) -> Result<()>;
 ```
 
-CLI surface (`src/cli.rs`): `Args` là lệnh `generate` ngầm định ở top-level; `Command` chỉ có ba variant read-only — `Doctor`, `Drift`, `Status`. `From<&Args> for CliOverrides` chuyển cờ CLI sang lớp override của config. Lưu ý: không có `Command::Generate` — generate là default khi không có subcommand.
+`PipelineCtx::new` (async, trả `Arc<Self>`) thực hiện tuần tự: `scanner::scan` đồng bộ → build `Manifest` **chỉ khi** `--incremental` hoặc `Mode::Agentic` (vì manifest tốn một lượt read+hash mọi file cộng import graph — không ai consume thì không đáng) → tạo `<internal>/` và `empty-cwd/` → dựng backends. Backends có thể inject (tests dùng `MockBackend`); `None` thì `default_backends` parse `models.efficient`/`models.powerful` qua `BackendKind::parse` và chỉ khởi tạo các kind thực sự được tham chiếu.
 
-## 4. Control flow
+### `RunStats`
 
-### 4.1 Sequence tổng thể
+Bookkeeping cho summary report: `cache_hits`, `cli_calls`, `saved_secs` (giây tiết kiệm nhờ cache), `timings` (wall time per-spec). Được bảo vệ bởi `Mutex` vì nhiều spec chạy song song cùng ghi vào.
+
+### Run lock
+
+`acquire_run_lock` dùng `OpenOptions::create_new` trên `<internal>/run.lock` — atomic, không race. File chứa pid của process. Logic reclaim:
+
+- Lock tồn tại + pid còn sống (`crate::sys::pid_alive`) → `Error::AlreadyRunning { pid }`, fail fast.
+- Lock tồn tại + pid chết / file không đọc được → stale, xóa và thử lại (tối đa 2 vòng).
+- `RunLock` implement `Drop` để xóa file khi run kết thúc — kể cả panic path.
+
+## 3. Các interface chính
+
+| Interface | Chữ ký | Vai trò |
+|---|---|---|
+| `PipelineCtx::new` | `async fn new(config, backends: Option<...>) -> Result<Arc<Self>>` | Dựng context: scan → manifest → dirs → backends |
+| `run` | `pub async fn run(pctx: &Arc<PipelineCtx>) -> Result<()>` | Wrapper: acquire lock, settle progress (`done`/`cancel`/`fail`) |
+| `run_pipeline` | private | Sequencing: incremental gate → research → compose → write → verify → summary |
+| `run_level_order` | `async fn(specs, pctx) -> Result<()>` | Chạy DAG theo topo levels; parallel trong level; hủy cooperative |
+| `dry_run_report` | `fn(config, scan) -> String` | Render effective config + task DAG cho `--dry-run` |
+| `PipelineCtx::backend` | `fn(kind) -> Result<Arc<dyn AgentBackend>>` | Lookup backend đã dựng; `BackendNotAvailable` nếu thiếu |
+
+CLI surface (`src/cli.rs`) định nghĩa `Args`, `Command::{Doctor, Drift, Status}`, `StatusArgs`, `DoctorArgs`, `Lang`, và `From<&Args> for CliOverrides`. Lưu ý: **`generate` không phải là `Command` variant** — nó là default action qua top-level args; ba subcommand kia là read-only và không chiếm run lock.
+
+## 4. Luồng điều khiển
+
+### 4.1 Entry & sequencing
+
+```mermaid
+flowchart TD
+    A[main: parse Args] --> B{subcommand?}
+    B -->|doctor/drift/status| C[run read-only command, exit]
+    B -->|none| D[Config::load + CliOverrides]
+    D --> E{dry_run?}
+    E -->|yes| F[dry_run_report: config + DAG]
+    E -->|no| G[PipelineCtx::new: scan, manifest, backends]
+    G --> H[acquire_run_lock]
+    H --> I{skip_research?}
+    I -->|yes| J[load research.json]
+    I -->|no| K{incremental cosmetic diff?}
+    K -->|yes, docs reusable| L[no-op return]
+    K -->|no| M[research: run_level_order]
+    M --> N[save research.json]
+    J --> O{skip_documentation?}
+    N --> O
+    O -->|no| P[compose: run_level_order]
+    P --> Q[write_docs]
+    Q --> R[save manifest]
+    R --> S[verify + write_summary + export_claims]
+    S --> T[drift notice if incremental]
+    O -->|yes| U[done]
+```
+
+`main.rs` (Tokio async main): parse `cli::Args` bằng clap → init tracing (`EnvFilter` từ `RUST_LOG` hoặc `-v`) → route subcommands read-only (không lock) → build `Config` từ `CliOverrides` (precedence CLI > `agentwiki.toml` > defaults) → `PipelineCtx::new` → spawn signal handler SIGINT/SIGTERM cancel `pctx.cancel` (signal thứ hai force-exit 130) → `pipeline::run`.
+
+### 4.2 Sequence diagram
 
 ```mermaid
 sequenceDiagram
@@ -112,77 +129,48 @@ sequenceDiagram
     M->>U: exit code (130 on cancel)
 ```
 
-### 4.2 `run_pipeline` — phase sequencing và incremental gate
+### 4.3 Incremental gate
 
-```mermaid
-flowchart TD
-    A[run_pipeline] --> B{skip_research?}
-    B -->|yes| C[load_research hydrate ctx tu research.json]
-    B -->|no| D{incremental + manifest diff?}
-    D -->|cosmetic + docs_reusable| E[no-op return, 0 calls]
-    D -->|structural / artifacts missing| F[research: run_level_order]
-    F --> G[save research.json]
-    C --> H{cancelled?}
-    G --> H
-    H -->|no| I{skip_documentation?}
-    I -->|no| J[compose: run_level_order]
-    J --> K[write_docs]
-    K --> L{research_ran?}
-    L -->|yes| M[save manifest]
-    L -->|no| N[verify]
-    M --> N
-    N --> O[write_summary + export_claims]
-    O --> P{incremental?}
-    P -->|yes| Q[drift_verify_notice warn-only]
-    P -->|no| R[done]
-    I -->|yes| R
-```
+Trong `run_pipeline`, khi `--incremental` và manifest cũ load được:
 
-Điểm đáng chú ý trong `run_pipeline` (`src/pipeline/mod.rs`):
+- `prev.diff(cur)` → `classify` ra `Significance::Cosmetic` hoặc `Structural(reasons)`.
+- `Cosmetic` + `docs_reusable(pctx)` → in thông báo và **return Ok — 0-call no-op**. Manifest không được ghi đè, nên delta cosmetic vẫn hiện trong `agentwiki status` thay vì bị "hấp thụ".
+- `docs_reusable` kiểm tra: output dir tồn tại, `research.json` và written-docs list đọc được, `research.json` không mới hơn written list (fail-open nếu run trước bị ngắt giữa research và compose), mọi doc trong list còn trên disk.
 
-- **Incremental gate**: nếu diff manifest là `Cosmetic` **và** `docs_reusable` xác nhận danh sách written-docs tồn tại, non-empty, mọi file còn trên đĩa, và `research.json` không mới hơn danh sách → run là no-op 0 call. Manifest cố tình **không** bị ghi đè để delta cosmetic còn hiện trong `agentwiki status`.
-- **Manifest chỉ save khi `research_ran`**: `--skip-research` compose trên research cũ nên không được phép advance manifest — tránh trạng thái "manifest khẳng định docs phản ánh tree hiện tại" trong khi docs render từ research cũ. Tương tự, manifest chỉ save **sau** `write_docs` để run bị interrupt giữa compose không để lại manifest nói dối.
-- **`export_claims`** ghi `agentwiki.claims.json` cạnh docs (non-fatal) để CI `drift` tìm thấy mà không cần nhớ `--export-claims`.
-- **`drift_verify_notice`**: sau incremental run, re-check claims vừa ghi với import graph — warn-only, không ảnh hưởng exit code (strict gating là việc của `agentwiki drift --strict` trong CI).
+### 4.4 DAG scheduling & cancellation
 
-### 4.3 `run_level_order` — topo scheduling + cancellation
+`run_level_order` duyệt `registry::topo_levels(specs)` — mỗi level là tập spec không phụ thuộc lẫn nhau:
 
-Mỗi phase (`research`, `compose`) lấy specs từ `registry::{research_specs, compose_specs}`, tính `topo_levels`, rồi chạy từng level:
+- Mỗi spec spawn vào `JoinSet` (spec + `Arc<PipelineCtx>` clone), `run_spec` tự acquire semaphore permit nên concurrency bị chặn bởi `config.max_parallels`.
+- Vòng lặp `tokio::select! { biased; ... }` ưu tiên nhận kết quả task; nhánh `cancel.cancelled()` gọi `set.abort_all()` — abort làm drop backend futures, kéo theo `kill_on_drop` giết child CLI processes — rồi drain JoinSet với timeout 3s để task kẹt trong sync poll không treo shutdown.
+- Giữa các level và giữa các phase, `pctx.cancel.is_cancelled()` được check lại để không start level/phase mới.
 
-- Specs trong cùng level spawn vào `tokio::task::JoinSet`, mỗi task gọi `run_spec(&spec, &pctx)`; concurrency thực tế bị bound bởi `pctx.semaphore` trong runner.
-- `tokio::select!` với `biased`: ưu tiên drain `join_next` khi cả hai branch sẵn sàng; khi `pctx.cancel` kích hoạt → `abort_all()` (dropping backend futures kill child CLIs nhờ `kill_on_drop`), drain có giới hạn **3 giây** để task kẹt trong sync poll không treo shutdown, rồi trả `Error::Cancelled`.
-- Giữa các level kiểm tra `is_cancelled()` để không start level tiếp theo.
+## 5. Quyết định implementation đáng chú ý
 
-### 4.4 `main.rs` — entry, signal, exit code
+1. **Hai `Phase`, không phải bốn.** Code chỉ model `Phase::{Research, Compose}`; Preprocess là Phase-0 input (scanner) và Verify sống trong `src/output/verify.rs`. Tên "4-stage pipeline" là khái niệm marketing — enum sẽ không mọc lên 4 nếu không refactor.
+2. **Manifest save sau `write_docs`, không phải trước.** Manifest khẳng định "docs trên disk phản ánh tree này" — ghi sớm sẽ cho phép một compose bị ngắt để lại manifest claim state mà docs chưa đạt, khiến `--incremental` run sau no-op vĩnh viễn trên stale docs.
+3. **Manifest chỉ save khi `research_ran`.** `--skip-research` compose trên research cũ nên không được phép claim tree.
+4. **`empty_cwd` cho embedded mode.** Một cwd sạch để subprocess CLI không vô tình đọc repo đang quét.
+5. **Warn-only drift sau incremental run.** `drift_verify_notice` reload claims vừa ghi, chạy `drift::analyze`, đếm findings `is_gating()` và in cảnh báo — nhưng không ảnh hưởng exit code. Strict gating thuộc về `drift --strict` trong CI.
+6. **Non-fatal artifacts.** `export_claims` viết `agentwiki.claims.json` cạnh docs để CI tìm được mà không cần `--export-claims`; lỗi chỉ warn.
+7. **`biased` select.** Nhánh `join_next` được ưu tiên để drain kết quả trước khi xử lý cancel — tránh bỏ sót lỗi task đã hoàn thành.
 
-- Subcommand `doctor`/`drift`/`status` return exit code trực tiếp, **không** lấy run lock, **không** cài cancellation handler — đúng tính chất read-only (`drift` vẫn scan để lấy file list nhưng không ghi state).
-- `--dry-run` → scan + `dry_run_report` (effective config + DAG theo phase, kèm exec kind `llm`/`deterministic`, model tier, fan-out `×N dirs`/`×N(domains)`, deps) rồi thoát.
-- Signal handler: SIGINT/SIGTERM thứ nhất → `cancel.cancel()` (hủy hợp tác); tín hiệu thứ hai → `exit(130)`. Nếu pipeline trả về mà `cancel` đã kích → `exit(130)` theo convention SIGINT.
-- Tracing: `-v/-vv/-vvv` → info/debug/trace, `RUST_LOG` override.
+## 6. Error & exit semantics
 
-## 5. Quyết định implement đáng chú ý
+- Mọi lỗi đi qua `crate::error::{Error, Result}`; cancellation surface là `Error::Cancelled` → exit 130.
+- `Error::AlreadyRunning { pid }` khi lock sống; `Error::BackendNotAvailable` khi spec yêu cầu kind chưa dựng.
+- Join error của task được bọc thành `Error::Pipeline("join: ...")`.
 
-1. **Manifest build có điều kiện**: chỉ khi `--incremental` (cần diff) hoặc `Mode::Agentic` (mix vào cache key). Run embedded thường không được gì từ nó — tiết kiệm một lượt read+hash toàn bộ file + import graph.
-2. **Backend injection**: `PipelineCtx::new(config, Some(map))` cho phép test nhét `MockBackend` — toàn bộ pipeline chạy offline không tốn call nào (`tests/*_offline.rs`).
-3. **Fail-open an toàn ở incremental gate**: `docs_reusable` trả `false` ở mọi trạng thái không chắc (output dir mất, written-docs corrupt, `research.json` mới hơn written list) → run thật thay vì no-op trên docs cũ.
-4. **Written-docs list như commit marker**: file `<internal>/written-docs-<sha12>.json` được ghi *cuối cùng* bằng atomic write, đóng vai trò bằng chứng "run đã hoàn tất" — ordering mtime so với `research.json` phát hiện interrupt giữa compose.
-5. **Biased select + bounded drain**: ưu tiên hoàn thành task khi cancel và join cùng pending; drain 3s tránh hang shutdown bởi sync-poll task.
-6. **Verify/summary/claims non-fatal**: giai đoạn cuối pipeline thu thập vấn đề vào report thay vì fail — strictness được dồn vào `drift --strict` ở CI.
-7. **Hai `Phase` enum, bốn stage danh nghĩa**: code chỉ có `Phase::{Research, Compose}`; Preprocess là scan (Phase 0 input) và Verify nằm ở `output/verify.rs` — không phải `Phase`, nên enum sẽ không tự mở rộng thành 4 nếu không refactor.
-8. **Stale deep-dive cleanup bị bound**: chỉ xóa path từng nằm trong written list của chính tool, tuyệt đối không quét "mọi `.md` không nhận ra" — file user tự thêm an toàn.
+## 7. Associated files
 
-## 6. Associated files
-
-| File | Nội dung |
+| File | Vai trò |
 |---|---|
-| `src/pipeline/mod.rs` | `PipelineCtx`, `RunStats`, `RunLock`, `run`, `run_pipeline`, `research`/`compose`, `run_level_order`, `dry_run_report`, `drift_verify_notice`, `docs_reusable` |
-| `src/main.rs` | `#[tokio::main]` entry, phân tuyến subcommand read-only, signal handler, `init_tracing` |
-| `src/cli.rs` | `Args`, `Command` (`Doctor`/`Drift`/`Status`), `StatusArgs`, `DoctorArgs`, `Lang`, `From<&Args> for CliOverrides` |
-| `src/output/mod.rs` | Re-export surface của output stage |
-| `src/output/writer.rs` | `DOCS` map, `write_docs`, written-docs manifest, stale cleanup, `sanitize_filename` |
-| `src/output/verify.rs` | `VerifyReport`, `verify`, heuristic mermaid check, `mermaid-fixer` hook |
-| `src/output/summary.rs` | `write_summary` — markdown + JSON run summary |
-| `src/output/boundary.rs` | `boundary_doc` — renderer deterministic cho boundary doc |
-| `src/output/database.rs` | `database_doc` — renderer deterministic cho database doc |
-
-**Dependencies vào module khác**: `agent::registry` (spec DAG + `topo_levels`), `agent::run_spec` + `ResearchContext`, `backend::{AgentBackend, BackendKind, for_kind}`, `scanner::scan`, `manifest` (build/diff/classify/output_key), `cache`, `quota`, `prompt::PromptLoader`, `drift::{claims, analyze}`, `sys::pid_alive`, `util::write_atomic`, `progress`. Lỗi đi qua `crate::error::{Error, Result}`; cancellation surface là `Error::Cancelled`.
+| `src/pipeline/mod.rs` | Orchestrator: `PipelineCtx`, `run`, `run_pipeline`, `run_level_order`, `acquire_run_lock`, `docs_reusable`, `drift_verify_notice`, `dry_run_report` |
+| `src/main.rs` | Tokio entry: parse args, tracing, signal handler, dispatch |
+| `src/cli.rs` | `Args`/`Command`/`CliOverrides` definitions |
+| `src/output/mod.rs` | Re-export `write_docs`, `verify`, `write_summary` |
+| `src/output/writer.rs` | Ghi doc tree; written-docs manifest (`load_written_docs`) |
+| `src/output/verify.rs` | `verify` → `VerifyReport` |
+| `src/output/summary.rs` | `write_summary`: markdown + `SummaryJson` |
+| `src/output/boundary.rs` | `boundary_doc` — deterministic renderer |
+| `src/output/database.rs` | `database_doc` — deterministic renderer |

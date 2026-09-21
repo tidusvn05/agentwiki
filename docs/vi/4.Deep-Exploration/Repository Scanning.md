@@ -1,64 +1,89 @@
-# Module Deep-Dive: Repository Scanning (`src/scanner`)
+# Repository Scanning — Tài liệu kỹ thuật chi tiết
 
 ## 1. Mục đích của module
 
-`src/scanner` hiện thực **Phase 0** của pipeline `agentwiki` — bước tiền xử lý hoàn toàn **deterministic** (xác định, không gọi LLM) chạy trước mọi tác vụ nghiên cứu. Module chịu trách nhiệm:
+`src/scanner` là **Phase 0** của pipeline `agentwiki` — giai đoạn tiền xử lý hoàn toàn **deterministic** (xác định, không dùng AI). Module này chịu trách nhiệm:
 
-- Duyệt cây thư mục của **repository mục tiêu** (read-only) với hệ thống luật loại trừ nhiều lớp.
-- Xây dựng mô hình cấu trúc dự án (`ScanData`, `DirectoryInfo`) làm đầu vào cho fan-out `dir_summary` và cho drift analyzer.
-- Trích xuất README/docs ở thư mục gốc để seed prompt.
-- Tính **statics theo từng file** (interfaces, dependencies, metrics) bằng regex — lazy, chỉ khi prompt building cần.
+- Duyệt cây thư mục của repository mục tiêu (WalkDir), áp dụng toàn bộ quy tắc loại trừ.
+- Xây dựng metadata cấu trúc thư mục (`ScanData` / `DirectoryInfo`) — đây là đầu vào cho cả **research fan-out** (mỗi thư mục là một target `dir_summary`) lẫn **drift analyzer** (import extraction).
+- Trích xuất README ở thư mục gốc để làm ngữ cảnh cho prompt.
+- Chấm điểm heuristic `importance_score` cho từng file và sắp xếp kết quả.
+- Cung cấp **statics theo từng file** (interfaces, dependencies, metrics) được tính **lazy** trong lúc build prompt — vẫn không có bất kỳ LLM call nào.
 
-Vì toàn bộ công đoạn này miễn phí và deterministic, nó nằm **trước ranh giới chi phí** (cache/quota/audit chỉ áp dụng cho runner LLM). Đây là một supporting domain quan trọng: mọi thứ downstream (manifest fingerprint, prompt materials, drift ground-truth scan) đều tiêu thụ `ScanData`.
+Tính chất "không AI" là cốt lõi: toàn bộ chi phí của phase này là I/O đĩa + regex, nên nó chạy được trước khi quota/cache/checkpoint của pipeline có hiệu lực, và được tái sử dụng bởi cả `drift` (read-only) mà không vi phạm ranh giới LLM-free.
 
 ## 2. Cấu trúc nội bộ
 
-| File | Vai trò |
-|---|---|
-| `src/scanner/mod.rs` | Facade: re-export public API và hàm điều phối `scan(config)` duy nhất. |
-| `src/scanner/files.rs` | Filesystem walk: luật loại trừ, filter git-tracked, chấm điểm importance, sắp xếp. |
-| `src/scanner/structure.rs` | Gom file theo thư mục → `ScanData`; render cây thư mục cho prompt; `read_capped`. |
-| `src/scanner/insights.rs` | Phân tích tĩnh theo file bằng regex (đa ngôn ngữ), lazy — gọi trong lúc build prompt. |
+| File | Vai trò | Thành phần chính |
+|---|---|---|
+| `src/scanner/mod.rs` | Facade của module | `scan(config)` — entry point duy nhất; re-export `FileEntry`, `scan_files`, `FileStatics`, `extract`, `DirectoryInfo`, `ScanData`, `build_structure` |
+| `src/scanner/files.rs` | Filesystem walk + filtering + scoring | `FileEntry`, `scan_files`, `importance`, `git_tracked_files`, `is_binary_by_content`, hằng `BINARY_EXTENSIONS` / `ALWAYS_EXCLUDED_DIRS` |
+| `src/scanner/structure.rs` | Nhóm file theo thư mục, render cây cho prompt | `DirectoryInfo`, `ScanData`, `build_structure`, `extract_docs`, `format_as_tree`, `format_as_directory_tree`, `read_capped`, `PathNode` |
+| `src/scanner/insights.rs` | Static analysis heuristic per-file (lazy) | `FileStatics`, `FileMetrics`, `ExtractedInterface`, `ExtractedDependency`, `extract`, `rules_for`, `cached_regex` |
 
-## 3. Interface chính
+`mod.rs` mỏng (33 dòng) — chỉ điều phối ba bước `scan_files → build_structure → extract_docs` rồi log `tracing::info!` số file/thư mục. Toàn bộ logic nằm ở ba file con.
 
-Re-export từ `mod.rs`:
+## 3. Key interfaces
 
 ```rust
+// mod.rs — entry point duy nhất của phase 0
 pub fn scan(config: &Config) -> Result<ScanData>
+
+// files.rs
+pub struct FileEntry {
+    pub rel_path: PathBuf,
+    pub abs_path: PathBuf,
+    pub name: String,
+    pub size: u64,
+    pub extension: Option<String>,      // lowercase
+    pub importance_score: f64,          // 0.0–1.0
+}
+pub fn scan_files(root: &Path, cfg: &ScanConfig, output_path: &Path) -> Result<Vec<FileEntry>>
+
+// structure.rs
+pub struct DirectoryInfo {              // 1 dir = 1 dir_summary fan-out target
+    pub path: PathBuf, pub rel_path: PathBuf, pub name: String,
+    pub files: Vec<FileEntry>, pub subdirectory_count: usize,
+}
+pub struct ScanData {
+    pub project_name: String, pub root: PathBuf,
+    pub files: Vec<FileEntry>,          // đã sort theo importance desc
+    pub directories: Vec<DirectoryInfo>,
+    pub file_types: HashMap<String, usize>,
+    pub readme: Option<String>,
+}
+pub fn build_structure(root: &Path, files: Vec<FileEntry>) -> ScanData
+pub fn format_as_tree / format_as_directory_tree(scan: &ScanData) -> String
+pub fn read_capped(path: &Path, max_chars: usize) -> Result<String>
+
+// insights.rs
+pub struct FileStatics { interfaces, dependencies, metrics }
+pub fn extract(path: &Path, content: &str) -> FileStatics
 ```
 
-Kiểu dữ liệu xuất ra:
+**Consumers**: prompt building (`materials.rs`) dùng `DirectoryInfo` làm fan-out axis và `FileStatics` để seed tên symbol vào prompt `dir_summary`/`key_module`; drift engine dùng lại file set từ `scan_files` để build FileGraph. `ScanData` cũng là input cho manifest fingerprinting.
 
-- **`FileEntry`** — `rel_path`, `abs_path`, `name`, `size`, `extension` (lowercase), `importance_score` (0.0–1.0).
-- **`DirectoryInfo`** — `path`, `rel_path` (`.` cho root), `name`, `files` (file trực tiếp), `subdirectory_count` (đếm thư mục con trực tiếp). Mỗi `DirectoryInfo` là một fan-out target cho `dir_summary`.
-- **`ScanData`** — `project_name`, `root`, `files` (đã sort theo importance), `directories`, `file_types` (histogram extension → count), `readme: Option<String>`.
-- **`FileStatics`** (từ `insights.rs`) — `interfaces: Vec<ExtractedInterface>`, `dependencies: Vec<ExtractedDependency>`, `metrics: FileMetrics`; kèm `extract(path, content)`.
-
-Public nhưng không re-export: `format_as_tree`, `format_as_directory_tree`, `read_capped` trong `structure.rs` — phục vụ prompt building.
-
-Dependencies: `crate::config::{Config, ScanConfig}`, `crate::error::{Error, Result}`; external crates: `walkdir`, `glob`, `regex`, `tracing`.
-
-## 4. Luồng điều khiển
+## 4. Data flow / Control flow
 
 ```mermaid
 flowchart TD
-    A[scan config] --> B[canonicalize project root]
+    A[ScanConfig] --> B[canonicalize project root]
     B --> C[scan_files: WalkDir traversal]
     C --> D{filters}
-    D -->|excluded dir/hidden/glob/binary/size| E[skip]
-    D -->|git_tracked_only| F[git ls-files filter]
+    D -->|excluded dir / hidden / glob / binary ext / size / NUL| E[skip]
+    D -->|git_tracked_only| F[git ls-files -z]
+    F --> D
     D -->|keep| G[importance scoring]
-    G --> H[sort by score desc, rel_path tiebreak]
-    H --> I[build_structure: bucket by parent dir]
-    I --> J[extract_docs: root README]
+    G --> H[sort: score desc, rel_path tiebreak]
+    H --> I[build_structure: bucket by parent dir in BTreeMap]
+    I --> J[extract_docs: root README*]
     J --> K[ScanData returned]
     K --> L[lazy extract: FileStatics per file during prompt building]
 ```
 
 ```mermaid
 sequenceDiagram
-    participant C as Caller
+    participant C as Pipeline
     participant S as scanner::scan
     participant F as files::scan_files
     participant G as git ls-files
@@ -67,79 +92,80 @@ sequenceDiagram
     S->>F: scan_files(root, scan_cfg, output_path)
     opt git_tracked_only
         F->>G: git ls-files -z
-        G-->>F: tracked paths
+        G-->>F: HashSet<PathBuf>
     end
     F->>F: WalkDir filter + score + sort
     F-->>S: Vec<FileEntry>
     S->>T: build_structure(root, files)
     T-->>S: ScanData
     S->>T: extract_docs(root, files)
-    T-->>S: readme Option<String>
+    T-->>S: Option<String>
     S-->>C: ScanData
 ```
 
-`scan()` (`mod.rs`) canonicalize `config.project_path`, gọi `scan_files(&root, &config.scan, &output_path)`, rồi `build_structure`, rồi `extract_docs`, log `tracing::info!` với số files/dirs. Lỗi canonicalize → `Error::io`.
+### Chi tiết pipeline bên trong `scan_files`
 
-## 5. Chi tiết triển khai
+Chuỗi filter áp dụng theo thứ tự:
 
-### 5.1 `files.rs` — walk & filter chain
+1. **Directory pruning** (qua `filter_entry` của WalkDir): `ALWAYS_EXCLUDED_DIRS` = `.agentwiki`, `.git`, `.hg`, `.svn` luôn bị cắt nhánh; thêm `cfg.excluded_dirs` (so sánh `eq_ignore_ascii_case`) và hidden dirs khi `include_hidden = false`.
+2. **Output-dir exclusion**: file nào `canonicalize` xong `starts_with(out_abs)` bị bỏ — tránh ingest chính output docs của agentwiki.
+3. **Hidden file**, **glob pattern** (`excluded_files`, lowercase `Pattern`), **binary extension** (bảng ~45 ext: ảnh, media, archive, font, compiled artifact).
+4. **Git-tracked filter**: nếu `git_tracked_only`, shell `git ls-files -z` → `HashSet<PathBuf>`; khi git không có sẵn hoặc trả rỗng → warn và fallback scan toàn bộ (không fail).
+5. **Size cap** (`max_file_size`) và **NUL-sniffing**: đọc tối đa 4096 byte đầu, tìm byte `0` — bắt binary không có extension.
+6. `WalkDir` còn chịu `max_depth` và `follow_links(false)` (không theo symlink).
 
-`scan_files` dùng `WalkDir` với `max_depth` từ config và `follow_links(false)`. `filter_entry` prune ngay tại mức directory qua `is_excluded_dir`:
+Kết quả được **sort ổn định**: `importance_score` giảm dần, tiebreak theo `rel_path` — đảm bảo output deterministic cho manifest diff.
 
-- **`ALWAYS_EXCLUDED_DIRS`**: `.agentwiki`, `.git`, `.hg`, `.svn` — state của chính tool + VCS, không bao giờ quét.
-- Hidden dirs (khi `include_hidden = false`) và `cfg.excluded_dirs` (so sánh `eq_ignore_ascii_case`).
+## 5. Những quyết định triển khai đáng chú ý
 
-Với mỗi file sống sót, chuỗi filter theo thứ tự:
+### 5.1 Importance heuristic (port từ deepwiki-rs)
 
-1. **Output-path exclusion**: file nằm dưới `output_path` (canonicalized) bị bỏ — tool không bao giờ nuốt output của chính nó.
-2. **Hidden file**: tên bắt đầu bằng `.` bị skip khi `include_hidden = false`.
-3. **Glob exclusion**: `cfg.excluded_files` compile thành `glob::Pattern` (lowercase, pattern không hợp lệ bị bỏ qua lặng lẽ).
-4. **Binary extension**: `BINARY_EXTENSIONS` (~45 ext: ảnh, media, archive, compiled artifact, font, db…).
-5. **Git-tracked filter**: khi `git_tracked_only`, chỉ giữ path có trong `git ls-files -z` (NUL-separated → `HashSet<PathBuf>`). Nếu git không khả dụng hoặc repo trống (`None` hoặc set rỗng) → fallback scan toàn bộ kèm `tracing::warn!`.
-6. **Size cap**: `size > cfg.max_file_size` → skip.
-7. **NUL-sniff**: `is_binary_by_content` đọc tối đa 4KB đầu, tìm byte `0` — bắt file binary không có extension.
+`importance()` là hàm cộng dồn cap ở 1.0, kết hợp tín hiệu đường dẫn và extension:
 
-Sau filter, `importance()` chấm điểm heuristic cộng dồn (ported từ deepwiki-rs): keyword trong path (`cmd`/`internal`/`pkg` +0.3, `main`/`index` +0.15, `config`/`setup` +0.1, `database`/`schema`/`migrations` +0.15), kích thước hợp lý (1KB–50KB +0.15), và trọng số extension (`.rs`/`.py`/`.go`… +0.4, `.sql` +0.3, config formats +0.1…), cap tại `1.0`. Kết quả sort desc theo score, tiebreak bằng `rel_path` — deterministic.
+- **Path keywords**: `cmd`/`internal`/`pkg` (+0.3 — convention của Go/Rust project layout), `main`/`index` (+0.15), `config`/`setup` (+0.1), `database`/`schema`/`migrations` (+0.15).
+- **Size sweet spot**: file 1–50 KiB (+0.15) — quá nhỏ thường là stub, quá lớn thường là generated.
+- **Extension tiers**: ngôn ngữ compiled chính (`rs`,`py`,`java`,`go`,… +0.4) > `sql` (+0.3) > `jsx`/`tsx`/`vue`/`svelte` (+0.2) > `js`/`ts` thuần (+0.15) > config `toml`/`yaml`/`json` (+0.1) > style/markup (+0.05).
 
-### 5.2 `structure.rs` — mô hình cấu trúc & tree rendering
+Điểm này quyết định thứ tự files trong prompt material — file quan trọng xuất hiện trước khi prompt bị truncate.
 
-- `build_structure` gom `FileEntry` vào `BTreeMap<PathBuf, Vec<FileEntry>>` keyed theo parent `rel_path` → thứ tự bucket deterministic. `subdirectory_count` đếm distinct immediate children giữa các dir có file; **thư mục rỗng trên disk vô hình** (by design — `dir_summary` chỉ cần dir có nội dung). `project_name` lấy basename của root.
-- `extract_docs` tìm file ở root (`parent` rỗng) có tên bắt đầu `readme` (case-insensitive), đọc content; bỏ qua file rỗng/whitespace.
-- `format_as_tree` / `format_as_directory_tree`: insert path vào `PathNode` trie (`BTreeMap` children), render theo convention `tree` Unix — directories trước, files sau, connector `├──`/`└──`, thư mục có suffix `/`. Variant directories-only dùng khi số file vượt ngưỡng prompt.
-- `read_capped` cắt nội dung file theo **char count** (an toàn UTF-8, không cắt giữa codepoint) và thêm marker `\n[truncated]`.
+### 5.2 `build_structure` — BTreeMap bucketing
 
-### 5.3 `insights.rs` — per-file statics
+- Files được bucket vào `BTreeMap<PathBuf, Vec<FileEntry>>` theo `rel_path.parent()` → directories tự nhiên được duyệt theo thứ tự từ điển.
+- `subdirectory_count` chỉ đếm **immediate children** có file — thư mục rỗng trên disk "vô hình" by design (comment trong code), vì `dir_summary` chỉ cần dir có content.
+- `project_name` lấy basename của root, fallback `"project"`.
+- `file_types` là histogram extension → count, phục vụ report và prompt context.
 
-`extract(path, content) -> FileStatics` chọn `LangRules` qua `rules_for(ext)` — bảng luật regex cho `rs`, `py`, `js/ts` family, `go`, `java/kt/scala`, C-family (`c/cpp/cs`), nhóm `rb/php/swift/dart/sh/sql`, cộng fallback rỗng. Mỗi `LangRules` gồm 4 danh sách: `funcs`, `types`, `imports` (regex với capture group cho tên), `branches` (keyword đếm cho complexity).
+### 5.3 `PathNode` trie + tree rendering
 
-Điểm đáng chú ý:
+`format_as_tree` / `format_as_directory_tree` chèn paths vào trie `BTreeMap` children, render dirs-first với connector `├──`/`└──`/`│   ` — output giống `tree(1)`, tối ưu cho LLM đọc. Hai biến thể: full file tree và directories-only (dùng khi số file vượt limit để giảm token).
 
-- **Regex cache toàn cục**: `CAP_CACHE` là `LazyLock<Mutex<HashMap<String, Regex>>>` — compile một lần, `Regex` clone rẻ (Arc bên trong), an toàn qua các agent song song.
-- **Cap capture**: tối đa 60 functions, 40 types, 40 imports mỗi file — giới hạn kích thước prompt material.
-- **Dedup**: `HashSet` `seen` với key `f:`/`t:`/`d:` + tên — tránh trùng khi nhiều pattern match cùng symbol.
-- **External heuristic**: import là external trừ khi bắt đầu `.`, `crate`, `self`, `super`.
-- **Metrics**: `lines_of_code` đếm dòng non-empty; `cyclomatic_complexity` là tổng số lần xuất hiện của branch keywords (ước lượng thô, không phải CFG thật).
-- `signature_line` trích dòng source chứa match (qua byte offset → line boundary), cap 160 chars.
+`read_capped` truncate theo **char count** (không phải byte — an toàn UTF-8) và gắn marker `\n[truncated]` để model biết nội dung bị cắt.
 
-Đây là **stand-in có ý thức cho `language_processors` của deepwiki-rs** — regex thay vì AST (AST parsing nằm ngoài system boundary). Đủ tốt để seed `dir_summary` prompt với tên symbol; không dùng cho drift ground-truth (drift có extractor riêng trong `src/drift/imports/`).
+### 5.4 `insights.rs` — regex statics thay AST
 
-## 6. Quyết định thiết kế đáng chú ý
+Đây là stand-in có ý thức cho `language_processors` của deepwiki-rs:
 
-- **Statics lazy**: `scan()` không tính `FileStatics` — việc này xảy ra trong prompt building (`FileStatics::for_entry`), tránh phân tích file không bao giờ vào prompt.
-- **Deterministic hoàn toàn**: `BTreeMap` ordering, sort với tiebreak, không hash-iteration vào output — quan trọng cho manifest fingerprinting và incremental regeneration.
-- **Fail-soft**: git unavailable → fallback full scan + warn; glob pattern xấu → skip; binary sniff fail → không binary. Lỗi cứng duy nhất: canonicalize root và lỗi walker.
-- **Self-exclusion**: output dir và `.agentwiki` luôn bị loại — scan không bao giờ tự nuốt artifact của mình, giữ determinism giữa các run.
-- **Config surface**: `ScanConfig` gồm `max_depth`, `max_file_size`, `git_tracked_only`, `include_hidden`, `include_tests`, `excluded_dirs`, `excluded_files`.
+- **`rules_for(ext)`**: bảng `LangRules { funcs, types, imports, branches }` cho `rs`, `py`, `js/ts` family, `go`, `java/kt/scala`, C-family, `rb/php/swift/dart/m/sh/sql`, và fallback rỗng vẫn đếm branch cơ bản.
+- **Regex cache toàn cục**: `CAP_CACHE: LazyLock<Mutex<HashMap<String, Regex>>>` — compile một lần, dùng chung qua `extract` gọi song song cho nhiều file.
+- **Dedup**: `HashSet` keyed `f:`/`t:`/`d:` tránh trùng symbol giữa các pattern; caps 60 funcs / 40 types / 40 imports mỗi file.
+- **is_external heuristic**: import được coi là external trừ khi bắt đầu `.`, `crate`, `self`, `super` — phân tách dependency nội bộ vs bên ngoài cho prompt.
+- **Metrics**: `lines_of_code` = non-empty lines; `cyclomatic_complexity` là đếm **branch keyword** thô (`if `, `for `, `match `, `?`…) — chỉ là tín hiệu tương đối, không phải metric chuẩn.
+- `signature_line` lấy dòng nguồn chứa match, cap 160 chars — đủ để model thấy signature mà không đọc body.
 
-## 7. Tiêu thụ downstream
+### 5.5 Error handling & determinism
 
-- **Prompt materials**: `DirectoryInfo` → fan-out targets của `dir_summary`; `FileStatics` seed tên symbol; `format_as_tree`/`read_capped` nhúng cấu trúc và source vào prompt.
-- **Manifest**: fingerprint đầu vào scan để phân loại thay đổi cosmetic vs structural.
-- **Drift engine**: lấy file set (read-only) làm nền cho import extraction/resolution.
+- Lỗi WalkDir được map sang `Error::io` (fail-fast); mọi fallback khác (`git` vắng, README không đọc được, output path chưa canonicalize) đều **degrade nhẹ** thay vì panic — phù hợp vai trò phase 0 phải robust.
+- Không `unwrap()`; sort có tiebreak → output byte-stable giữa các lần chạy, điều kiện cần cho manifest fingerprinting phát hiện cosmetic vs structural change.
 
-## 8. Associated files
+## 6. Vị trí trong hệ thống
 
-- `src/scanner/mod.rs`
-- `src/scanner/files.rs`
-- `src/scanner/structure.rs`
-- `src/scanner/insights.rs`
+- **Upstream**: `crate::config::{Config, ScanConfig}` (`max_depth`, `excluded_dirs`, `excluded_files`, `include_hidden`, `git_tracked_only`, `max_file_size`) và `crate::error`.
+- **Downstream**: pipeline orchestrator (Phase 0 → manifest diff), agent fan-out (`DirectoryInfo` → `dir_summary` instances), prompt materials (`format_as_tree`, `FileStatics`), drift engine (file set cho import extraction), `status` command (fresh scan để diff).
+- **External deps**: `walkdir`, `glob`, `regex`, `tracing`; subprocess duy nhất là `git ls-files -z` khi `git_tracked_only` bật.
+
+## 7. Associated files
+
+- `src/scanner/mod.rs` — facade, `scan()` orchestration, re-exports
+- `src/scanner/files.rs` — `scan_files`, exclusion rules, git filter, `importance`
+- `src/scanner/structure.rs` — `ScanData`/`DirectoryInfo`, `build_structure`, `extract_docs`, tree renderers, `read_capped`
+- `src/scanner/insights.rs` — `FileStatics`, `LangRules` table, `extract`, regex cache

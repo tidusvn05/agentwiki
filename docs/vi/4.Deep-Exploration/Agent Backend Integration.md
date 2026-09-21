@@ -1,150 +1,170 @@
-# Agent Backend Integration
+# Agent Backend Integration — Module Deep-Dive
 
 ## 1. Mục đích của module
 
-`src/backend` là tầng adapter biến các agent CLI đã xác thực sẵn (`devin`, `claude`, `codex`) thành các LLM provider đồng nhất phía sau trait bất đồng bộ `AgentBackend`, kèm theo một mock chạy trong tiến trình (`MockBackend`) cho test offline. Đây là supporting domain nhưng mang tính quyết định cho toàn bộ pipeline: mọi lời gọi model đều đi qua một điểm duy nhất là `AgentBackend::run`, nên cost boundary (cache, quota, audit), timeout, và cách normalize output đều được định nghĩa ở đây.
+`src/backend/` là lớp adapter (supporting domain) biến các agent CLI **đã xác thực sẵn** trên máy người dùng — `devin`, `claude`, `codex` — thành các LLM provider đồng nhất cho toàn bộ pipeline. Thay vì tự quản lý API key và gọi HTTP API, agentwiki spawn subprocess, truyền prompt vào, rồi chuẩn hóa output (stdout thô, JSON envelope, hoặc luồng sự kiện JSONL) về một kiểu kết quả duy nhất.
 
 Module chịu trách nhiệm:
 
-- Phân tích chuỗi model `"<backend>:<model>"` (với hậu tố `@<effort>` do từng backend tự xử lý) và dispatch tới implementation tương ứng.
-- Dịch `AgentRequest` thành một lời gọi subprocess với flags, stdin/prompt-file, env đã lọc, timeout, và `kill_on_drop`.
-- Chuẩn hóa ba giao thức output khác nhau — stdout thuần (devin), JSON envelope (claude), JSONL event stream + file `-o` (codex) — về cùng một `AgentResult`.
-- Cung cấp `mock:*` để toàn bộ pipeline chạy offline qua đúng đường dispatch production.
+- **Định nghĩa hợp đồng**: trait `AgentBackend` + các kiểu dữ liệu `AgentRequest` / `AgentResult` / `TokenUsage` / `BackendKind`.
+- **Dispatch**: phân tích model string dạng `"<backend>:<model>"` (với hậu tố `@<effort>` tùy backend), auto-detect CLI trên `PATH`, và factory `for_kind` — nơi duy nhất `match` trên `BackendKind`.
+- **Subprocess governance**: mỗi backend thật dùng `tokio::process::Command` với `kill_on_drop`, `sanitized_env` (loại bỏ biến môi trường billing), và `tokio::time::timeout` theo từng call.
+- **Offline testing**: `MockBackend` chạy in-process, truy cập qua model string `mock:*` nên test đi qua đúng đường dispatch production.
 
 ## 2. Cấu trúc nội bộ
 
-| File | Vai trò |
-|---|---|
-| `src/backend/mod.rs` | Định nghĩa `BackendKind`, `AgentRequest`/`AgentResult`/`TokenUsage`, trait `AgentBackend`, `for_kind`, `sanitized_env`, `tail` |
-| `src/backend/devin.rs` | Reference backend: `devin -p --prompt-file`, stdout thuần |
-| `src/backend/claude.rs` | `claude -p --output-format json`, parse JSON envelope, hỗ trợ `model@effort`, `sanitize_schema` |
-| `src/backend/codex.rs` | `codex exec --json -o <file>`, parse JSONL events, `normalize_schema` sang subset nghiêm ngặt của codex |
-| `src/backend/mock.rs` | Test double trong tiến trình: `MockBackend::new` / `canned` / `with_delay`, trường `calls` public để assert |
+| File | Thành phần | Vai trò |
+|---|---|---|
+| `src/backend/mod.rs` | `BackendKind`, `AgentRequest`, `AgentResult`, `TokenUsage`, `trait AgentBackend`, `for_kind`, `sanitized_env`, `tail` | Hợp đồng + dispatch + helper chung |
+| `src/backend/devin.rs` | `DevinBackend` | Reference implementation — adapter đơn giản nhất, `devin -p`, stdout thô |
+| `src/backend/claude.rs` | `ClaudeBackend`, `parse_model`, `sanitize_schema`, `parse_envelope` | `claude -p` + JSON envelope |
+| `src/backend/codex.rs` | `CodexBackend`, `parse_model`, `normalize_schema`, `parse_events`, `is_nullable` | `codex exec` + JSONL event stream |
+| `src/backend/mock.rs` | `MockBackend`, `MockHandler`, `canned`, `with_delay` | Test double có kịch bản |
 
-Quy ước mở rộng được ghi ngay trong header của `mod.rs`: thêm backend = thêm một file + một arm trong `for_kind` — `for_kind` là nơi duy nhất `match` trên `BackendKind` tồn tại.
+Thiết kế "one file = one backend": thêm backend mới chỉ cần một file implement trait + một arm trong `for_kind` (ghi rõ trong doc-comment của `mod.rs`).
 
-## 3. Interface chính
+## 3. Giao diện chính
+
+### 3.1 `trait AgentBackend`
 
 ```rust
 #[async_trait]
 pub trait AgentBackend: Send + Sync {
     fn kind(&self) -> BackendKind;
-    fn supports_fs(&self) -> bool;          // true cho CLI thật, false cho mock
+    fn supports_fs(&self) -> bool;                 // agentic/file-reading mode gate
     async fn run(&self, req: AgentRequest) -> Result<AgentResult>;
 }
 ```
 
-Các kiểu dữ liệu chia sẻ (`src/backend/mod.rs`):
+- `supports_fs()`: `true` cho cả 3 CLI thật (chúng có thể đọc file trong `cwd`), `false` cho mock — cờ này quyết định agent có chạy được ở chế độ agentic hay không.
+- Backend được giữ dưới dạng `Arc<dyn AgentBackend>` trong `HashMap<BackendKind, Arc<dyn AgentBackend>>` của `PipelineCtx`; test inject mock qua `PipelineCtx::new` thay vì qua factory.
 
-- **`AgentRequest`**: `prompt` đã render, `model` (Option, pass-through vào CLI), `cwd` (empty-cwd cho embedded mode hoặc project root cho agentic mode), `timeout` per-call, `agent` (tên để correlate span/log), `json_schema` (Option — backend nào hỗ trợ thì enforce, còn lại bỏ qua).
-- **`AgentResult`**: `text` (final message/stdout), `backend`, `model` thực dùng, `duration` wall-clock, `usage: Option<TokenUsage>` (`None` khi CLI không expose), `stderr_tail` (giữ cả khi success để chẩn đoán).
-- **`BackendKind`**: `Devin | Claude | Codex | Mock`. `parse("mock:test")` cũng nhận alias `"test"`. `detect()` quét `PATH` theo thứ tự ưu tiên devin → codex → claude. `default_models()` trả về cặp `(efficient, powerful)` cho từng kind (vd `claude:sonnet@low` / `claude:sonnet@high`, `codex:gpt-5.6-sol@low` / `codex:gpt-5.6-sol@high`). `as_str()` cho id ổn định dùng trong log, cache key, audit.
+### 3.2 `AgentRequest` / `AgentResult`
 
-Helpers dùng chung:
+`AgentRequest` mang: `prompt` (đã render đầy đủ), `model` tùy chọn (truyền thẳng xuống CLI), `cwd`, `timeout` per-call, `agent` (tên dùng cho span/log correlation), và `json_schema` tùy chọn. Quan trọng: **`json_schema` là best-effort** — backend nào hỗ trợ (`codex --output-schema`, `claude --json-schema`) thì enforce, backend nào không (devin) thì bỏ qua một cách có chủ đích.
 
-- **`sanitized_env(cmd)`**: gỡ khỏi env của process con các prefix có thể bật billing qua API key hoặc nhiễu session — `ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_API`, `CODEX_API`, `DEVIN_API`, `OPENHANDS_*`. Đây là điểm kiểm soát để đảm bảo cuộc gọi luôn đi qua login state của CLI thay vì vô tình dùng metered API.
-- **`tail(s, n)`**: lấy `n` ký tự cuối (char-aware) cho thông điệp lỗi và `stderr_tail` (500 ký tự).
+`AgentResult` chuẩn hóa: `text` (final message), `backend`, `model`, `duration` wall-clock, `usage: Option<TokenUsage>` (`None` khi CLI không expose), `stderr_tail` (500 ký tự cuối stderr — giữ cả khi thành công để chẩn đoán).
 
-## 4. Luồng dữ liệu và điều khiển
+### 3.3 `BackendKind`: parsing, defaults, detect
 
-### Dispatch
+- `parse("<backend>:<model>")` → `(kind, Option<model>)`. `"mock"` và `"test"` đều map về `Mock`; backend lạ → `Error::BackendNotAvailable`.
+- `as_str()` cho id ổn định trong log/cache key/audit line.
+- `default_models()` cung cấp cặp `(efficient, powerful)` theo kind, ví dụ `("claude:sonnet@low", "claude:sonnet@high")` — nguồn cho built-in profiles.
+- `detect()` quét `PATH` theo thứ tự ưu tiên **devin → codex → claude**.
+
+## 4. Luồng dữ liệu & điều khiển
 
 ```mermaid
 flowchart TD
-    MS["model string backend:model"] --> PARSE[BackendKind_parse]
-    DET["BackendKind_detect quet PATH"] --> PARSE
-    PARSE --> FK[for_kind]
-    FK --> ARC["Arc dyn AgentBackend"]
-    ARC --> CTX["PipelineCtx backend map"]
-    CTX --> RUN["AgentBackend::run AgentRequest"]
+    MS[model string backend:model] --> PARSE[BackendKind::parse]
+    DET[BackendKind::detect quét PATH] --> PARSE
+    PARSE --> FK[for_kind factory]
+    FK --> ARC[Arc dyn AgentBackend]
+    ARC --> RUN[AgentBackend::run AgentRequest]
     RUN --> D{kind}
-    D -->|Devin| DV["devin -p --prompt-file tmp"]
-    D -->|Claude| CL["claude -p --output-format json, prompt qua stdin"]
-    D -->|Codex| CX["codex exec --json -o file, prompt qua stdin"]
-    D -->|Mock| MK["handler closure trong tien trinh"]
-    DV --> P1["stdout thuan"]
-    CL --> P2["parse_envelope: structured_output / result / usage / is_error"]
-    CX --> P3["parse_events JSONL + doc file -o"]
-    MK --> P4["canned hoac custom handler"]
+    D -->|Devin| DV[devin -p --prompt-file tmp]
+    D -->|Claude| CL[claude -p --output-format json stdin]
+    D -->|Codex| CX[codex exec --json -o file stdin]
+    D -->|Mock| MK[handler closure in-process]
+    DV --> ENV[sanitized_env + timeout + kill_on_drop]
+    CL --> ENV
+    CX --> ENV
+    ENV --> P1[stdout text]
+    ENV --> P2[parse_envelope result usage is_error]
+    ENV --> P3[parse_events JSONL + file -o]
+    MK --> P4[canned hoặc custom handler]
     P1 --> AR[AgentResult]
     P2 --> AR
     P3 --> AR
     P4 --> AR
 ```
 
-`PipelineCtx` giữ `HashMap<BackendKind, Arc<dyn AgentBackend>>` — injectable qua `PipelineCtx::new` để test có thể thay mock tùy biến. `agent/runner.rs` gọi `run` phía sau cache/quota: cache hit thì không spawn subprocess nào.
-
-### Một lời gọi điển hình
-
 ```mermaid
 sequenceDiagram
-    participant R as Agent runner
+    participant R as Agentic Runner
+    participant C as PipelineCtx
+    participant F as for_kind
     participant B as AgentBackend impl
     participant S as CLI subprocess
+    R->>C: backend(kind)
+    C->>F: for_kind(BackendKind)
+    F-->>C: Arc dyn AgentBackend
+    C-->>R: backend
     R->>B: run(AgentRequest)
-    B->>B: parse_model + normalize/sanitize schema
-    B->>S: spawn Command (kill_on_drop, sanitized env)
-    R->>B: prompt qua stdin hoac prompt-file
+    B->>B: parse_model, sanitize/normalize schema
+    B->>S: spawn Command (stdin hoặc prompt-file)
     S-->>B: stdout + stderr + exit status
-    B->>B: parse envelope hoac event stream
-    alt thanh cong
+    B->>B: parse envelope / event stream
+    alt success
         B-->>R: AgentResult text usage duration stderr_tail
-    else exit!=0 hoac turn failed / is_error
-        B-->>R: Error::Backend(message, stderr_tail)
+    else exit != 0 hoặc turn failed
+        B-->>R: Error::Backend message + stderr_tail
     else timeout
-        B-->>R: Error::Timeout (child bi kill khi drop)
+        B-->>R: Error::Timeout (child bị kill khi drop)
     end
 ```
 
-Cả ba backend thật đều: spawn qua `tokio::process::Command` với `kill_on_drop(true)` (drop do cancel/timeout phải giết CLI — process orphan sẽ tiếp tục tốn call mà không ai cache kết quả), áp `tokio::time::timeout` per-call trả về `Error::Timeout`, và trả `Error::Backend` kèm `stderr_tail` khi exit code khác 0.
+Runner (`src/agent/runner.rs`) là consumer duy nhất: nó đặt cache/quota **trước** `run()`, nên backend chỉ lo dịch request → subprocess → result.
 
 ## 5. Từng backend
 
-### Devin (`devin.rs`, 97 dòng)
+### 5.1 Devin (`devin.rs`) — reference implementation
 
-Adapter đơn giản nhất — reference implementation của v1. Prompt được ghi vào `NamedTempFile` (`agentwiki-devin-*`) rồi truyền qua `--prompt-file` để tránh giới hạn argv. Command: `devin -p --prompt-file <tmp> --respect-workspace-trust false --permission-mode auto [--model <m>]`. `permission-mode auto` auto-approve các tool read-only; prompt print-mode bị fail sẽ lộ ra qua exit≠0 thay vì treo im lặng. stdout trim được trả về nguyên trạng; `usage: None` vì CLI không expose. `json_schema` bị bỏ qua (documented behavior).
+- Lệnh: `devin -p --prompt-file <tmp> --respect-workspace-trust false --permission-mode auto [--model M]`.
+- Prompt đi qua `NamedTempFile` thay vì argv để tránh giới hạn độ dài argv.
+- `--permission-mode auto`: read-only tools tự approve; failure trong print-mode vẫn bề nổi qua exit≠0 thay vì treo im lặng.
+- Không parse gì: stdout trim → `text`, `usage: None`, `json_schema` bị bỏ qua (documented).
+- `stdin` đặt `Stdio::null()` — không cần ghi prompt.
 
-### Claude (`claude.rs`, 352 dòng)
+### 5.2 Claude (`claude.rs`)
 
-Prompt qua stdin; command: `claude -p --output-format json --no-session-persistence --permission-mode bypassPermissions --setting-sources local [--model][--effort][--json-schema <inline>]`. `--setting-sources local` chặn `CLAUDE.md` và settings của user/project khỏi nhiễu prompt.
+- Lệnh: `claude -p --output-format json --no-session-persistence --permission-mode bypassPermissions --setting-sources local [--model M] [--effort E] [--json-schema S]`; prompt ghi qua **stdin pipe**.
+- `--setting-sources local` cố ý bỏ qua `CLAUDE.md` của user/project để prompt không bị nhiễm.
+- `parse_model` tách `<model>@<effort>` (rsplit trên `@`), validate effort trong `EFFORTS = [low, medium, high, xhigh, max]` — typo fail **trước khi spawn**.
+- `sanitize_schema`: xóa đệ quy mọi key `$schema` vì `claude --json-schema` từ chối draft URI mà schemars phát ra.
+- `parse_envelope` đọc envelope JSON: ưu tiên `structured_output` (khi có `--json-schema`), fallback `result`; `input` = `input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens` để khớp ngữ nghĩa "total prompt tokens" với codex; **`is_error` được surface tường minh** vì claude có thể exit 0 trên turn thất bại — `subtype` khác `"success"` được prepend vào message (`"error_max_turns: hit the turn limit"`).
+- Envelope không parse được → fallback stdout thô, giữ cho downstream JSON-extraction vẫn dùng được.
 
-- **`parse_model`**: tách `"<model>@<effort>"`, validate effort trong `[low, medium, high, xhigh, max]` trước khi spawn — typo fail sớm thay vì fail trong CLI.
-- **`sanitize_schema`**: xóa đệ quy mọi key `$schema`, vì `claude --json-schema` từ chối draft URI mà schemars emit ở root.
-- **`parse_envelope`**: ưu tiên `structured_output` (xuất hiện khi có `--json-schema`) rồi đến `result`; `usage.input` cộng `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` để `input` mang nghĩa "tổng prompt tokens" nhất quán với codex. **`is_error` được surface tường minh** — claude có thể exit 0 trên một turn fail; `subtype` khác `""`/`success` được prepend vào message (vd `error_max_turns: hit the turn limit`). Nếu exit≠0 thì error text trong envelope được ưu tiên hơn bare exit code. Envelope không parse được → fallback stdout thuần.
+### 5.3 Codex (`codex.rs`)
 
-### Codex (`codex.rs`, 438 dòng)
+- Lệnh: `codex exec --skip-git-repo-check -s read-only --color never --ephemeral --disable hooks -c project_doc_max_bytes=0 --json -o <tmp> [-m M] [-c model_reasoning_effort="E"] [--output-schema <file>] -`; prompt qua stdin (`-`).
+- Các cờ `--ephemeral` (một subprocess/call, không để lại session), `--disable hooks`, và `project_doc_max_bytes=0` (không nhét `AGENTS.md` của project vào prompt — materials là việc của agentwiki) thể hiện chính sách "prompt sạch".
+- `EFFORTS` thêm `"ultra"` so với claude; effort map sang `model_reasoning_effort` qua `-c`.
+- `normalize_schema` viết lại schema của schemars theo subset strict mà codex chấp nhận:
+  - `oneOf` → `enum` khi mọi variant là `const` cùng `type`, ngược lại downgrade `anyOf`;
+  - `$ref` phải đứng một mình — mọi sibling keyword bị drop (`allOf` cũng bị cấm);
+  - object nào cũng `additionalProperties: false` và `required` liệt kê **toàn bộ** properties; field vốn optional được bọc `anyOf: [orig, {type: null}]` (kiểm tra `is_nullable` trước để không bọc kép).
+- `parse_events` đọc stdout JSONL: `item.completed`/`agent_message` cuối = text fallback; `turn.completed` → usage (`output` gồm cả `reasoning_output_tokens`); `turn.failed`/`error` → surface lỗi vì codex exec **exit 0 trên turn fail**.
+- Text cuối ưu tiên file `-o` (last message của agent); event stream chỉ là fallback khi file rỗng. Schema file phải là `NamedTempFile` sống lâu hơn child process.
 
-Phức tạp nhất. Prompt qua stdin (đối số `-`); command: `codex exec --skip-git-repo-check -s read-only --color never --ephemeral --disable hooks -c project_doc_max_bytes=0 --json -o <tmp> [-m <model>] [-c model_reasoning_effort="<e>"] [--output-schema <file>]`. Các flag đáng chú ý: `--ephemeral` (mỗi call một subprocess, không để lại session file), `--disable hooks` (user hooks như SessionStart sẽ chạy mỗi call nếu không tắt), `project_doc_max_bytes=0` (giữ `AGENTS.md` của project khỏi prompt — materials là việc của agentwiki).
+### 5.4 Mock (`mock.rs`)
 
-- **`parse_model`**: giống claude nhưng EFFORTS thêm `"ultra"`; effort map sang `-c model_reasoning_effort="<e>"`.
-- **`parse_events`**: quét stdout JSONL từng dòng — `item.completed` có `item.type == "agent_message"` làm fallback text (bản cuối ghi đè), `turn.completed` cho usage (`output` gồm cả `reasoning_output_tokens`), `turn.failed`/`error` cho failure — `codex exec` cũng exit 0 trên turn fail nên phải surface tường minh.
-- **Text cuối**: ưu tiên file `-o` (final message của agent); nếu file rỗng thì dùng `agent_message` cuối trong event stream.
-- **`normalize_schema`**: viết lại schema của schemars sang subset nghiêm ngặt mà `--output-schema` chấp nhận — xóa `$schema`; `$ref` phải đứng một mình (sibling keywords bị drop, `allOf` bị cấm); `oneOf` → `enum` nếu mọi variant là `const` cùng một `type` (giữ `type` khi dedup còn đúng một), ngược lại hạ xuống `anyOf`; mọi object nhận `additionalProperties: false` và `required` liệt kê toàn bộ properties — field vốn optional được bọc `{"anyOf": [orig, {"type":"null"}]}` trừ khi đã nullable (`is_nullable` kiểm tra `type: "null"`, union type, hoặc `anyOf` chứa null). Schema file temp phải sống lâu hơn child process.
+- `MockBackend::new(handler)` bọc `Fn(&AgentRequest) -> Result<String,String>`; `Err(msg)` mô phỏng CLI fail → `Error::Backend`.
+- `canned(responses)`: match chính xác `req.agent`, sau đó match prefix `name@target` (cho fan-out instances), default `"{}"`.
+- `with_delay` dùng `tokio::time::sleep` — async nên cancellation vẫn cắt được mid-flight; `calls: Mutex<Vec<String>>` public cho assertions.
+- `supports_fs() = false`; `for_kind(Mock)` luôn tạo `canned(&[])` — mock tùy chỉnh phải inject qua `PipelineCtx::new`.
 
-### Mock (`mock.rs`, 106 dòng)
+## 6. Quyết định triển khai đáng chú ý
 
-`MockBackend` chạy hoàn toàn trong tiến trình, `supports_fs() == false` (gate chế độ agentic/file-reading). `calls: Mutex<Vec<String>>` public ghi lại `req.agent` của mọi request để assert. `delay` là `tokio::time::sleep` — async nên cancellation vẫn cắt được, cho phép test các đường mid-flight. `canned(responses)` match `req.agent` exact trước, rồi prefix `name@target` (key là prefix, phần còn lại phải bắt đầu bằng `@`), miss thì trả `"{}"`. Lưu ý: arm `for_kind` cho Mock luôn tạo `canned(&[])` — mock tùy biến phải inject qua `PipelineCtx::new`, không qua factory.
+1. **`sanitized_env` tập trung**: `BANNED_PREFIXES` (`ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_API`, `CODEX_API`, `DEVIN_API`, `OPENHANDS_*`) bị `env_remove` khỏi mọi child — tránh CLI bị flip sang metered API billing hoặc rối session state. Định nghĩa một lần trong `mod.rs`, dùng bởi tất cả backend.
+2. **`kill_on_drop(true)` ở mọi backend**: khi cancel/timeout làm drop `Child`, subprocess phải chết — orphan sẽ tiếp tục đốt quota mà không ai cache kết quả (comment trong code nói đúng như vậy).
+3. **`build_cmd` private mỗi file**: toàn bộ CLI invocation ở một chỗ → đổi flag là single-point fix.
+4. **Exit 0 ≠ success**: cả claude (`is_error`) lẫn codex (`turn.failed`/`error`) đều có thể exit 0 khi turn thất bại — cả hai parser đều surface lỗi từ payload thay vì tin exit code.
+5. **Schema capability gradient**: devin bỏ qua, claude truyền inline sau khi strip `$schema`, codex enforce strict nhất qua file — `AgentRequest::json_schema` do đó là hint, không phải contract.
+6. **Prompt transport khác nhau có lý do**: devin dùng `--prompt-file` (argv limit), claude/codex dùng stdin (CLI hỗ trợ, tránh temp file cho payload lớn — riêng codex vẫn cần temp file cho `-o` và `--output-schema`).
+7. **Parsing tách pure functions** (`parse_envelope`, `parse_events`, `normalize_schema`, `sanitize_schema`, `parse_model`) → unit-testable in-file; test coverage tập trung vào edge cases của claude/codex, còn devin/mock được cover bởi integration test (`tests/incremental_offline.rs`, gating `AGENTWIKI_E2E=1` cho e2e thật).
 
-## 6. Quyết định thiết kế đáng chú ý
+## 7. Rủi ro / điểm cần theo dõi
 
-- **Không quản lý credential**: `sanitized_env` chủ động xóa API-key env vars, ép mọi call đi qua login state của CLI — đúng với boundary "delegated, not implemented".
-- **Fail-before-spawn**: effort strings được validate trong `parse_model` của từng backend trước khi spawn, biến typo thành `Error::Backend` có message liệt kê giá trị hợp lệ.
-- **Exit 0 ≠ success**: cả claude (`is_error`) lẫn codex (`turn.failed`) đều có thể exit 0 trên turn fail — hai parser đều surface lỗi envelope/event tường minh thay vì tin exit code.
-- **Schema là best-effort**: `AgentRequest.json_schema` được enforce ở claude (`--json-schema` inline) và codex (`--output-schema` file, sau `normalize_schema`), devin/mock bỏ qua. Runner chịu trách nhiệm extract/validate JSON sau cùng nên backend chỉ cần "khuyến khích" cấu trúc.
-- **Single-point flag ownership**: mỗi backend giữ toàn bộ invocation trong `build_cmd` private — đổi flag của một CLI chỉ sửa một hàm.
-- **`stderr_tail` luôn được giữ** (kể cả khi success) để chẩn đoán sau; lỗi trả `tail(..., 500)` để log không phình to.
-- **Testability**: unit test trong file cho các parser/normalizer (`parse_model`, `parse_envelope`, `sanitize_schema`, `parse_events`, `normalize_schema`, `is_nullable`); devin/mock dựa vào integration test (`tests/incremental_offline.rs`); suite e2e với CLI thật bị gate bởi `AGENTWIKI_E2E=1`.
-
-## 7. Rủi ro đã biết
-
-- Độ tin cậy gắn với hành vi CLI ngoài: đổi format envelope/event của `claude`/`codex` sẽ phá parsing (fail silent tới khi test/drift bắt được).
-- Mock qua `for_kind` luôn là `canned(&[])` — test cần handler riêng phải inject backend map thủ công.
-- Devin không báo usage → token accounting thiếu cho backend đó.
+- **Coupling với format output của CLI ngoài**: envelope của `claude` hay event schema của `codex` đổi sẽ phá parser — test offline với mock không bắt được; cần e2e (`AGENTWIKI_E2E=1`) để phát hiện.
+- **Devin không báo usage** → `TokenUsage` tổng hợp sẽ thiếu khi backend là devin.
+- **Fork của effort list**: claude và codex giữ hai bảng `EFFORTS` gần giống nhau — hợp lý vì codex thêm `"ultra"`, nhưng drift giữa hai file cần chú ý khi CLI đổi tên mức.
 
 ## 8. File liên quan
 
-- `src/backend/mod.rs` — trait, types, parse/detect, factory, env sanitizer
-- `src/backend/{devin,claude,codex,mock}.rs` — bốn implementation
-- `src/pipeline/mod.rs` — `PipelineCtx` giữ và resolve backend map
-- `src/agent/runner.rs` — nơi duy nhất gọi `run` (phía sau cache/quota/retry)
-- `tests/incremental_offline.rs` — test pipeline offline qua `mock:*`
+- `src/backend/mod.rs`, `src/backend/{devin,claude,codex,mock}.rs` — toàn bộ module.
+- `src/agent/runner.rs` — consumer duy nhất của `AgentBackend::run` (đứng sau cache/quota).
+- `src/pipeline/mod.rs` — `PipelineCtx` giữ `HashMap<BackendKind, Arc<dyn AgentBackend>>`, điểm inject mock.
+- `src/error.rs` — `Error::Backend`, `Error::Timeout`, `Error::BackendNotAvailable`, `Error::io`.
+- `src/sys.rs` — `find_on_path` cho `BackendKind::detect`.
+- `tests/incremental_offline.rs` — integration test offline qua `mock:*`.

@@ -1,148 +1,145 @@
-# Tài liệu kỹ thuật: Configuration & Prompt Management
+# Module Deep-Dive: Configuration & Prompt Management
 
-## 1. Mục đích của module
+## 1. Mục đích module
 
-Module **Configuration & Prompt Management** là tầng hạ tầng chịu trách nhiệm cung cấp hai năng lực cho toàn bộ pipeline của agentwiki:
+Đây là **domain hạ tầng** cung cấp hai dịch vụ nền tảng cho toàn bộ pipeline của agentwiki:
 
-1. **Phân giải cấu hình nhiều lớp** (`src/config.rs`): gộp các nguồn cấu hình theo thứ tự ưu tiên `mặc định → TOML toàn cục → TOML dự án → profile được chọn → tham số CLI`, sau đó tự phát hiện backend trên PATH cho các model tier chưa được cấu hình, và tạo ra một struct `Config` đã resolve hoàn chỉnh.
-2. **Engine prompt template** (`src/prompt.rs` + thư mục `prompts/`): render các placeholder `{{key}}` và nạp template với cơ chế "ghi đè trên đĩa, fallback về template nhúng", giúp binary tự chứa hoàn toàn nhưng vẫn cho phép người dùng tùy biến prompt mà không cần build lại.
+1. **Giải quyết cấu hình phân lớp** (`src/config.rs`): hợp nhất cấu hình theo thứ tự ưu tiên `defaults → TOML global → TOML project → profile → CLI overrides`, sau đó tự phát hiện model từ PATH cho các tier chưa được đặt. Mọi tham số vận hành — model backend, giới hạn quota, chính sách scan, verify, drift — đều chảy qua một `Config` đã resolve đầy đủ.
+2. **Engine prompt template** (`src/prompt.rs` + `prompts/`): thư viện 13 template Markdown được embed vào binary qua `include_str!`, cho phép override bằng file trên đĩa, và render qua cơ chế thay thế `{{key}}` đơn giản.
 
-Module này không tự thực thi pipeline; nó là **dependency thuần túy** — mọi consumer (CLI entry, agentic runner, backend spawner, compose stage) đều đọc `Config` và gọi `PromptLoader` thay vì tự đọc file cấu hình.
+Module này không tự gọi LLM; nó chỉ định hình *prompt nào* được gửi và *backend/model nào* được spawn — ranh giới mà runner trong domain Agent Orchestration tiêu thụ.
 
 ## 2. Cấu trúc nội bộ
 
-```
-src/config.rs   (~828 dòng)   ─ Config, CliOverrides, TomlConfig + *Partial,
-                                enums Mode / TargetLanguage / ModelTier,
-                                hàm merge: load, apply_toml, track_models,
-                                find_profile, builtin_profile, unknown_profile
-src/prompt.rs   (~88 dòng)    ─ render(), PromptLoader, macro embedded!,
-                                embedded_template()
-prompts/                      ─ 9 template phân tích + prompts/editors/ (4 template)
-```
-
 ### 2.1 Config Resolution (`src/config.rs`)
 
-Các thành phần chính:
+```
+Config                    — cấu hình runtime đã resolve đầy đủ (Serialize/Deserialize)
+├── ModelsConfig          — [models]: efficient / powerful ("<backend>:<model>")
+├── LimitsConfig          — [limits]: daily_cap, call_timeout_s, retry_attempts,
+│                           materials_char_cap, code_insights_limit, file_source_chars
+├── ScanConfig            — [scan]: max_depth, max_file_size, git_tracked_only,
+│                           include_hidden/tests, excluded_dirs/files
+├── VerifyConfig          — [verify]: mermaid_fixer
+└── DriftConfig           — [drift] (định nghĩa ở src/drift/config.rs, apply qua DriftPartial)
 
-- **`Config`**: struct cấu hình runtime đã resolve đầy đủ — `project_path`, `output_path`, `internal_path` (state dir `.agentwiki/`), `prompts_dir`, `target_language`, `max_parallels`, `mode`, các cờ skip/no-cache/incremental, và các section lồng `models`, `limits`, `scan`, `verify`, `drift`. `Config::default()` mặc định `devin` làm cặp model, `max_parallels = 2`, `mode = Embedded`.
-- **`CliOverrides`**: tập tham số đã được clap flatten — `profile` (positional), `-p`/`-o`, `--model-efficient`, `--model-powerful`, `--agentic`, `--incremental`/`--full`, các cờ skip.
-- **`TomlConfig` + các `*Partial`** (`ModelsPartial`, `LimitsPartial`, `ScanPartial`, `VerifyPartial`, `DriftPartial`): mọi trường đều `Option<T>`, để mỗi lớp chỉ là **overlay một phần**; `TomlConfig` cũng tái sử dụng cho `[profiles.<name>]`.
-- **Enums**: `Mode::{Embedded, Agentic}` (prompt nhúng code vs. agent tự đọc file tại project root), `TargetLanguage` (8 ngôn ngữ; mỗi ngôn ngữ có `instruction()` được append vào mọi prompt, ví dụ `Vi` → "Write all prose in Vietnamese. JSON keys stay in English."), `ModelTier::{Efficient, Powerful}` (model rẻ/nhanh cho tác vụ thường vs. model mạnh cho schema phức tạp và retry fallback).
-- **`LimitsConfig`** kiểm soát chi phí: `daily_cap` (300), `call_timeout_s` (600), `retry_attempts` (3), `materials_char_cap` (192K), `code_insights_limit` (25), `file_source_chars` (500). **`ScanConfig`** quy định giới hạn quét: `max_depth`, `max_file_size`, `git_tracked_only`, danh sách `excluded_dirs`/`excluded_files` (bao gồm cả `agentwiki.toml` và `.env`).
+TomlConfig (private)      — mirror toàn-optional của Config + bảng [profiles.<name>]
+*Partial (private)        — ModelsPartial, LimitsPartial, ScanPartial, VerifyPartial
+CliOverrides (public)     — struct phẳng do clap flatten: profile, -p/-o,
+                            --model-*, --agentic, --incremental/--full, skip flags
+
+Enums:
+Mode          — Embedded (default: prompt chứa sẵn code) | Agentic (agent tự đọc file)
+TargetLanguage— 8 ngôn ngữ; instruction() trả về câu chỉ thị nối vào mọi prompt
+ModelTier     — Efficient | Powerful (không Serialize — chỉ là key nội bộ)
+```
 
 ### 2.2 Prompt Engine (`src/prompt.rs`)
 
-- **`render(template, vars)`**: thay `{{key}}` bằng `str::replace` cho từng biến. Độ phức tạp O(số biến × độ dài template) — chấp nhận được vì prompt chỉ render một lần cho mỗi agent call.
-- **Macro `embedded!`**: sinh `embedded_template(name) -> Option<&'static str>` dạng `match` trên 13 tên template, mỗi nhánh trả `include_str!("../prompts/...")`. Template được biên dịch vào binary nên không phụ thuộc file hệ thống.
-- **`PromptLoader { dir: Option<PathBuf> }`**: `load(name)` trước hết kiểm tra `dir.join(name)` trên đĩa (là `config.prompts_dir`); nếu file tồn tại thì đọc nó, nếu không fallback về `embedded_template`; không có cả hai → `Error::Prompt { name, "unknown template" }`.
-
-### 2.3 Thư viện template (`prompts/`)
-
-| Nhóm | Template | Persona |
-|---|---|---|
-| Phân tích | `system_context.md`, `domain_modules.md`, `boundary.md`, `database.md`, `workflow.md`, `relationships.md`, `dir_summary.md`, `key_module.md`, `architecture.md` | Research agents: tóm tắt thư mục, trích quan hệ, mô tả system context, ranh giới, database, workflow |
-| Editor | `editors/overview.md`, `editors/architecture_doc.md`, `editors/workflow_doc.md`, `editors/deep_dive.md` | Compose-stage agents render tài liệu C4 |
-
-Tất cả template đều nhúng quy tắc an toàn Mermaid (ASCII-only node IDs, các diagram header được phép) và có điểm chèn `{{custom}}` cho biến do caller truyền vào.
-
-## 3. Interface công khai
-
-```rust
-// Điểm vào duy nhất, gọi từ main/CLI parsing
-Config::load(cli: &CliOverrides, config_path: Option<&Path>) -> Result<Config>
-
-// Tiện ích trên Config
-cfg.model_for(ModelTier) -> &str          // "<backend>:<model>" cho backend spawner
-cfg.call_timeout() -> Duration            // limits.call_timeout_s
-Config::global_config_file() -> Option<PathBuf>
-
-// Phía prompt
-prompt::render(template, &HashMap<&str, String>) -> String
-PromptLoader::new(Option<PathBuf>) -> Self
-loader.load("system_context.md") -> Result<String>
+```
+render(template, &HashMap<&str, String>) -> String   — thay {{key}}, giữ nguyên placeholder lạ
+embedded! macro                                        — ánh xạ 13 tên → include_str! assets
+embedded_template(name) -> Option<&'static str>        — match tĩnh sinh bởi macro
+PromptLoader { dir: Option<PathBuf> }
+├── new(dir)          — dir = config.prompts_dir
+└── load(name)        — disk-first, fallback embedded, lỗi Error::Prompt nếu không có
 ```
 
-Phụ thuộc: `crate::backend::BackendKind` (`parse`, `detect`, `default_models`), `crate::error::{Error, Result}`, `crate::drift::config::DriftConfig`. Bề mặt lỗi là `Error::Config` và `Error::Prompt`.
+### 2.3 Prompt Template Library (`prompts/`)
+
+| Nhóm | Template | Vai trò |
+|---|---|---|
+| Research (9) | `system_context.md`, `domain_modules.md`, `architecture.md`, `workflow.md`, `boundary.md`, `database.md`, `relationships.md`, `dir_summary.md`, `key_module.md` | Persona phân tích: yêu cầu JSON schema cứng, quy tắc output, `{{schema_block}}` |
+| Editors (4) | `editors/overview.md`, `editors/architecture_doc.md`, `editors/workflow_doc.md`, `editors/deep_dive.md` | Persona biên soạn tài liệu C4; nhúng sẵn Mermaid safety rules (ASCII-only node IDs, header chuẩn) |
+
+Placeholder dùng chung gồm `{{materials}}`, `{{language_instruction}}`, `{{schema_block}}`, `{{agentic_note}}`, `{{custom}}` — research template có thêm `{{schema_block}}`, editor template nhấn mạnh quy tắc Mermaid.
+
+## 3. Interface chính
+
+| API | Chữ ký | Người dùng |
+|---|---|---|
+| `Config::load` | `(cli: &CliOverrides, config_path: Option<&Path>) -> Result<Config>` | Điểm vào duy nhất, gọi từ main/CLI parsing |
+| `Config::model_for` | `(ModelTier) -> &str` | Runner/backend spawner lấy chuỗi `"<backend>:<model>"` |
+| `Config::call_timeout` | `() -> Duration` | Runner khi spawn subprocess |
+| `Config::global_config_file` | `() -> Option<PathBuf>` | doctor/status để hiển thị |
+| `prompt::render` | `(&str, &HashMap<&str,String>) -> String` | Agent runner khi build prompt |
+| `PromptLoader::new` / `load` | `(Option<PathBuf>)` / `(name) -> Result<String>` | Pipeline stages fetch template |
+
+Phụ thuộc ra ngoài: `crate::backend::BackendKind` (`parse`, `detect`, `default_models`) và `crate::error::{Error, Result}` — `Error::Config` và `Error::Prompt` là hai failure surface.
 
 ## 4. Luồng dữ liệu / điều khiển
 
-### 4.1 Chuỗi phân giải cấu hình
+### 4.1 Luồng resolve cấu hình
 
 ```mermaid
 flowchart TD
-    A[CliOverrides] --> B[Config::load]
-    B --> C[Config::default]
-    C --> D[global config.toml]
-    D --> E[project agentwiki.toml]
-    E --> F{profile found?}
-    F -->|TOML profile| G[apply profile layer]
-    F -->|builtin| H[builtin_profile]
-    F -->|none| I[unknown_profile error]
-    G --> J[apply CLI overrides]
-    H --> J
-    J --> K{model tiers set?}
-    K -->|no| L[BackendKind::detect]
-    K -->|yes| M[anchor internal_path]
-    L --> M
-    M --> N[Config]
-    O[PromptLoader::load] --> P{prompts_dir file?}
-    P -->|yes| Q[read disk file]
-    P -->|no| R[embedded_template]
-    Q --> S[render vars]
-    R --> S
-    S --> T[prompt String]
+  A[CliOverrides] --> B[Config::load]
+  B --> C[Config::default]
+  C --> D[global config.toml]
+  D --> E[project agentwiki.toml]
+  E --> F{profile found?}
+  F -->|TOML profile| G[apply profile layer]
+  F -->|builtin| H[builtin_profile]
+  F -->|none| I[unknown_profile error]
+  G --> J[apply CLI overrides]
+  H --> J
+  J --> K{model tiers set?}
+  K -->|no| L[BackendKind::detect]
+  K -->|yes| M[anchor internal_path]
+  L --> M
+  M --> N[Config]
 ```
+
+Chi tiết từng lớp trong `Config::load` (`src/config.rs:377-483`):
+
+1. **Defaults**: `Config::default()` — `max_parallels=2`, `Mode::Embedded`, model mặc định của `BackendKind::Devin`, scan loại trừ `target`, `node_modules`, lockfiles, `.env`, v.v.
+2. **Global TOML**: `$XDG_CONFIG_HOME/agentwiki/config.toml` → fallback `~/.config/agentwiki/config.toml` (hàm `global_config_path`, `src/config.rs:604`).
+3. **Project TOML**: `config_path` tường minh, hoặc `agentwiki.toml` cạnh `project_path` rồi đến cwd.
+4. **Profile**: tên từ positional arg `agentwiki <profile>` (mặc định `"default"`). Thứ tự tìm: `[profiles.<name>]` trong TOML project → TOML global → built-in.
+5. **CLI overrides**: field-wise; cờ bool dùng `|=`, `max_parallels` clamp `>= 1`, `--full` xóa `incremental`.
+6. **Auto-detect**: `BackendKind::detect()` quét PATH theo thứ tự devin → codex → claude, chỉ fill tier chưa được set.
+7. **Anchor**: `internal_path` tương đối được ghép vào `project_path` (state `.agentwiki/` luôn theo repo).
+
+### 4.2 Luồng tải và render prompt
 
 ```mermaid
 sequenceDiagram
-    participant CLI
-    participant Config
-    participant TOML
-    participant Backend
-    participant Loader as PromptLoader
-    CLI->>Config: load(cli, config_path)
-    Config->>TOML: load_toml(global config)
-    Config->>TOML: load_toml(agentwiki.toml)
-    Config->>Config: apply_toml layers
-    Config->>Config: find_profile / builtin_profile
-    Config->>Backend: BackendKind::detect (unset tiers)
-    Config-->>CLI: Config
-    CLI->>Loader: new(config.prompts_dir)
-    CLI->>Loader: load(template name)
-    Loader-->>CLI: template String
-    CLI->>CLI: render(template, vars)
+  participant CLI
+  participant Config
+  participant Loader as PromptLoader
+  CLI->>Config: load(cli, config_path)
+  Config-->>CLI: Config (prompts_dir)
+  CLI->>Loader: new(config.prompts_dir)
+  CLI->>Loader: load("system_context.md")
+  alt file tồn tại trong prompts_dir
+    Loader-->>CLI: nội dung file trên đĩa
+  else
+    Loader-->>CLI: embedded template (include_str!)
+  end
+  CLI->>CLI: render(template, vars)
 ```
 
-### 4.2 Thứ tự các lớp trong `Config::load`
-
-1. `Config::default()` làm nền; mảng `models_set: [bool; 2]` (efficient, powerful) theo dõi tier nào đã được cấu hình tường minh.
-2. **Global TOML** — `global_config_path()` thử `$XDG_CONFIG_HOME/agentwiki/config.toml` rồi `~/.config/agentwiki/config.toml`.
-3. **Project TOML** — `config_path` nếu được chỉ định; ngược lại tìm `agentwiki.toml` cạnh `project_path`, sau đó ở cwd.
-4. **Profile** — tên từ `cli.profile` (mặc định `"default"`): `find_profile` tra `[profiles.<name>]` trong TOML dự án trước (project shadow global), sau đó `builtin_profile`:
-   - `default` → lớp no-op (`TomlConfig::default()`), đảm bảo `agentwiki default` chạy được trên máy mới.
-   - Tên backend trần (`devin`, `claude`, `codex`) → `BackendKind::parse` rồi dùng `default_models()` của CLI đó làm cặp efficient/powerful. `mock`/`test` bị loại khỏi profile.
-   - Không khớp → `unknown_profile` trả `Error::Config` liệt kê mọi profile khả dụng (built-ins + TOML).
-5. **CLI overrides** — cờ bool được OR vào (`|=`), `max_parallels` bị clamp `>= 1`, `--full` xóa `incremental`. Cờ `--model-*` cũng đánh dấu `models_set`.
-6. **Auto-detect** — nếu còn tier nào chưa set, `BackendKind::detect()` chọn CLI đầu tiên trên PATH (devin → codex → claude) và chỉ điền các tier còn trống; không tìm thấy backend thì giữ default.
-7. **Anchor `internal_path`** — nếu là đường dẫn tương đối, ghép vào `project_path` để state `.agentwiki/` luôn per-repo.
+`PromptLoader::load` thử `dir.join(name)` trước; nếu không phải file, rơi về `embedded_template(name)`. Không có cả hai → `Error::Prompt { name, "unknown template" }`.
 
 ## 5. Quyết định triển khai đáng chú ý
 
-- **Merge theo từng trường**: `apply_toml` chỉ copy trường `Some` — mỗi lớp là overlay một phần, không phải thay thế nguyên section. Đây là lý do cần song song `TomlConfig` (Option) và `Config` (giá trị concrete).
-- **Tracking tường minh cho model tier**: mảng `[bool; 2]` phân biệt "người dùng không set" với "default", để `BackendKind::detect()` không ghi đè model đã cấu hình — bao gồm cả cờ CLI (CLI model flags được tính là explicit).
-- **Profile shadowing có thứ tự**: TOML dự án > TOML global > built-in, cho phép `[profiles.claude]` trong TOML đè lên built-in `claude`.
-- **Binary tự chứa**: `include_str!` nhúng cả 13 template; `prompts_dir` là điểm mở rộng tùy chọn.
-- **`render` giữ nguyên placeholder lạ**: JSON ví dụ trong template (kiểu `{{"a": 1}}`) không bị phá, vì chỉ key khớp mới được thay. Đây là hành vi có chủ đích và được test.
-- **`internal_path` neo vào project** sau mọi lớp merge, đảm bảo cache/quota/research context luôn nằm trong repo đích.
-- **Các bài test** phủ: thứ tự ưu tiên TOML→CLI, CLI model flags chặn auto-detect, profile override TOML nhưng vẫn thua CLI, profile TOML shadow built-in backend, lỗi unknown profile liệt kê đầy đủ tên khả dụng, và render giữ placeholder lạ.
+- **Merge theo field-wise partial overlay.** `apply_toml` chỉ chép các field `Some` từ `TomlConfig` sang accumulator — mỗi lớp là một overlay riêng, không có merge sâu danh sách (excluded_dirs/files bị thay thế nguyên vẹn, không nối thêm). `TomlConfig` còn tái dùng chính nó cho `[profiles.<name>]` (key `profiles` lồng trong profile bị bỏ qua).
+- **Tracking tier đã-set qua `[bool; 2]`.** `track_models` ghi lại tier nào được đặt tường minh ở *bất kỳ* lớp nào (kể cả CLI flags — có test `cli_model_flags_count_as_explicit`). Chỉ tier còn trống mới được `BackendKind::detect()` fill; khi PATH không có CLI nào, giữ nguyên default và để lỗi spawn ở runtime nói rõ vấn đề.
+- **Profile built-in cho tên backend trần.** `agentwiki claude` resolve qua `BackendKind::parse` → layer chỉ chứa cặp model mặc định của CLI đó (ví dụ `claude:sonnet@low` / `claude:sonnet@high`). `mock`/`test` bị loại khỏi profile built-in; `default` là no-op layer để `agentwiki default` luôn chạy được. Profile TOML shadow built-in cùng tên; tên lạ → `Error::Config` liệt kê đầy đủ profile khả dụng.
+- **Render `{{key}}` bằng `str::replace` và cố ý giữ placeholder lạ.** `render` chạy O(vars × template), thay từng `{{k}}` bằng giá trị. Placeholder không có trong map được giữ nguyên — điều này cho phép template chứa ví dụ JSON kiểu `{{"a": 1}}` mà không bị phá (test `render_replaces_known_leaves_unknown` khóa hành vi này). Đánh đổi: không có escaping hay lỗi khi thiếu biến — biến thiếu lặng lẽ lọt vào prompt cuối.
+- **Self-contained binary với disk override.** Macro `embedded!` sinh `match` tĩnh trả `Option<&'static str>` từ `include_str!`, nên binary phát hành mang sẵn toàn bộ prompt library; `config.prompts_dir` cho phép người dùng/CI override từng file mà không cần rebuild — điểm mở rộng chính để iterate prompt.
+- **`internal_path` neo vào project.** Cache, quota, research context luôn nằm dưới `<project>/.agentwiki/`, đảm bảo state per-repo kể cả khi chạy từ cwd khác.
+- **`TargetLanguage::instruction()` là câu prose chèn vào prompt**, không phải locale code — ví dụ `"Write all prose in Vietnamese. JSON keys stay in English."`, tiêm qua placeholder `{{language_instruction}}`.
 
-## 6. Các file liên quan
+## 6. Files liên quan
 
-- `src/config.rs` — toàn bộ resolver cấu hình
-- `src/prompt.rs` — render + `PromptLoader` + bảng template nhúng
-- `prompts/*.md` — 9 template phân tích: `dir_summary`, `relationships`, `system_context`, `domain_modules`, `architecture`, `workflow`, `key_module`, `boundary`, `database`
-- `prompts/editors/*.md` — 4 template compose: `overview`, `architecture_doc`, `workflow_doc`, `deep_dive`
-- `src/backend/mod.rs` — `BackendKind` (dependency: `parse`, `detect`, `default_models`)
-- `src/drift/config.rs` — `DriftConfig`/`DriftPartial` được merge qua `apply_toml`
-- `src/cli.rs`, `src/main.rs` — sản xuất `CliOverrides` và gọi `Config::load`
+- `src/config.rs` — toàn bộ resolver cấu hình + tests (precedence, profile shadowing, unknown-profile error, explicit-model tracking)
+- `src/prompt.rs` — `render`, macro `embedded!`, `PromptLoader`
+- `prompts/` — 9 research template + `prompts/editors/` 4 editor template
+- Phụ thuộc: `src/backend/mod.rs` (`BackendKind`), `src/error.rs`, `src/drift/config.rs` (`DriftConfig`/`DriftPartial`), `src/cli.rs` (clap flatten vào `CliOverrides`)
+
+## 7. Điểm cần lưu ý khi mở rộng
+
+- Thêm field cấu hình mới phải đụng 4 chỗ: `Config`, `TomlConfig` (+`*Partial` nếu trong section), `apply_toml`, và `CliOverrides` nếu muốn CLI flag.
+- Thêm template mới: tạo file trong `prompts/` và thêm một dòng vào block `embedded!` — thiếu dòng macro sẽ chỉ lỗi runtime (`unknown template`), không lỗi compile.
+- Vì cache key của runner bao gồm prompt, sửa template sẽ invalidate cache rộng — cân nhắc khi iterate prompt trên repo lớn.

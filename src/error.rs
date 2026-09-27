@@ -24,7 +24,7 @@ pub enum Error {
     /// An agent CLI exited non-zero or could not be spawned.
     #[error("backend {backend} failed: {message}\nstderr tail: {stderr_tail}")]
     Backend {
-        /// Backend kind (devin, claude, codex).
+        /// Backend kind (claude, codex, devin, opencode).
         backend: &'static str,
         /// What went wrong.
         message: String,

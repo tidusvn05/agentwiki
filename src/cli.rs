@@ -7,13 +7,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 use crate::config::{CliOverrides, TargetLanguage};
 
 /// Generate C4-style architecture documentation for a repository using an
-/// already-authenticated agent CLI (devin, claude, codex) as the LLM backend.
+/// already-authenticated agent CLI as the LLM backend.
 #[derive(Debug, Parser)]
 #[command(name = "agentwiki", version, about)]
 pub struct Args {
     /// Named profile from agentwiki.toml or ~/.config/agentwiki/config.toml
-    /// (`[profiles.<name>]` section), or a backend name (`devin`, `claude`,
-    /// `codex`) to select that CLI's default models.
+    /// (`[profiles.<name>]` section), or a CLI name (`opencode`, `claude`, `codex`, `devin`).
     #[arg(value_name = "PROFILE")]
     pub profile: Option<String>,
 

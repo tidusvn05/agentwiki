@@ -80,7 +80,7 @@ pub struct ModelsConfig {
 
 impl Default for ModelsConfig {
     fn default() -> Self {
-        let (efficient, powerful) = BackendKind::Devin.default_models();
+        let (efficient, powerful) = BackendKind::OpenCode.default_models();
         Self {
             efficient,
             powerful,
@@ -372,17 +372,13 @@ pub struct CliOverrides {
 
 impl Config {
     /// Merge order: defaults → global `~/.config/agentwiki/config.toml` →
-    /// project `agentwiki.toml` → selected profile → CLI overrides →
-    /// PATH auto-detection for model tiers nobody set.
+    /// project `agentwiki.toml` → selected profile → CLI overrides.
     pub fn load(cli: &CliOverrides, config_path: Option<&Path>) -> Result<Config> {
         let mut cfg = Config::default();
-        // [efficient, powerful] — tiers explicitly configured somewhere.
-        let mut models_set = [false; 2];
 
         // Global user config (base settings + shared profiles).
         let global_toml = global_config_path().map(|p| load_toml(&p)).transpose()?;
         if let Some(t) = &global_toml {
-            track_models(t, &mut models_set);
             cfg.apply_toml(t);
         }
 
@@ -403,20 +399,17 @@ impl Config {
         });
         let project_toml = toml_path.map(|p| load_toml(&p)).transpose()?;
         if let Some(t) = &project_toml {
-            track_models(t, &mut models_set);
             cfg.apply_toml(t);
         }
 
         // Profile layer — no positional arg means `default`. Project
         // profiles shadow global ones, and both shadow the built-ins:
-        // `default` (a no-op) and bare backend names (`agentwiki claude`
+        // `default` (a no-op) and the bare backend name (`agentwiki opencode`
         // selects that CLI's default model pair).
         let name = cli.profile.as_deref().unwrap_or("default");
         if let Some(profile) = find_profile(name, project_toml.as_ref(), global_toml.as_ref()) {
-            track_models(profile, &mut models_set);
             cfg.apply_toml(profile);
         } else if let Some(builtin) = builtin_profile(name) {
-            track_models(&builtin, &mut models_set);
             cfg.apply_toml(&builtin);
         } else {
             return Err(unknown_profile(
@@ -439,11 +432,9 @@ impl Config {
         }
         if let Some(m) = &cli.model_efficient {
             cfg.models.efficient = m.clone();
-            models_set[0] = true;
         }
         if let Some(m) = &cli.model_powerful {
             cfg.models.powerful = m.clone();
-            models_set[1] = true;
         }
         if let Some(n) = cli.max_parallels {
             cfg.max_parallels = n.max(1);
@@ -458,21 +449,6 @@ impl Config {
         cfg.incremental |= cli.incremental;
         if cli.full {
             cfg.incremental = false;
-        }
-
-        // Auto-detect: model tiers nobody configured fall back to the first
-        // agent CLI on PATH (devin → codex → claude). Nothing found keeps
-        // the built-in default — the spawn error at run time is clear enough.
-        if !(models_set[0] && models_set[1])
-            && let Some(kind) = BackendKind::detect()
-        {
-            let (e, p) = kind.default_models();
-            if !models_set[0] {
-                cfg.models.efficient = e;
-            }
-            if !models_set[1] {
-                cfg.models.powerful = p;
-            }
         }
 
         // internal_path is relative to the project (per-repo cache/state).
@@ -612,15 +588,6 @@ fn global_config_path() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-/// Record which model tiers a TOML layer sets explicitly — tiers left
-/// unset everywhere become eligible for PATH auto-detection.
-fn track_models(t: &TomlConfig, set: &mut [bool; 2]) {
-    if let Some(m) = &t.models {
-        set[0] |= m.efficient.is_some();
-        set[1] |= m.powerful.is_some();
-    }
-}
-
 /// Find profile `name` in TOML (project shadows global). `None` means the
 /// name may still resolve to a built-in — see [`builtin_profile`].
 fn find_profile<'a>(
@@ -634,8 +601,7 @@ fn find_profile<'a>(
 }
 
 /// Built-in profiles, shadowed by any TOML profile of the same name:
-/// `default` is a no-op layer; bare backend names (`devin`, `claude`,
-/// `codex`) select that CLI's default model pair.
+/// `default` is a no-op layer; each CLI name selects its default model.
 fn builtin_profile(name: &str) -> Option<TomlConfig> {
     if name == "default" {
         return Some(TomlConfig::default());
@@ -657,7 +623,7 @@ fn builtin_profile(name: &str) -> Option<TomlConfig> {
 /// `unknown profile` error listing the built-ins plus every TOML-defined
 /// profile name.
 fn unknown_profile(name: &str, project: Option<&TomlConfig>, global: Option<&TomlConfig>) -> Error {
-    let mut avail: Vec<String> = ["default", "devin", "claude", "codex"]
+    let mut avail: Vec<String> = ["default", "opencode", "claude", "codex", "devin"]
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -694,8 +660,8 @@ mod tests {
 max_parallels = 4
 target_language = "vi"
 [models]
-efficient = "devin:swe-2-low"
-powerful = "devin:swe-2-max"
+efficient = "opencode:openai/gpt-5#low"
+powerful = "opencode:openai/gpt-5#high"
 [limits]
 daily_cap = 5
 "#,
@@ -707,15 +673,15 @@ daily_cap = 5
         };
         let cfg = Config::load(&cli, Some(&toml_path)).unwrap();
         assert_eq!(cfg.max_parallels, 8); // CLI wins
-        assert_eq!(cfg.models.efficient, "devin:swe-2-low");
+        assert_eq!(cfg.models.efficient, "opencode:openai/gpt-5#low");
         assert_eq!(cfg.limits.daily_cap, 5);
         assert_eq!(cfg.target_language, TargetLanguage::Vi);
-        assert_eq!(cfg.models.powerful, "devin:swe-2-max");
+        assert_eq!(cfg.models.powerful, "opencode:openai/gpt-5#high");
     }
 
     #[test]
     fn cli_model_flags_count_as_explicit() {
-        // Both tiers set on the CLI → PATH detection must not touch them.
+        // Both tiers set on the CLI override OpenCode defaults.
         let cli = CliOverrides {
             model_efficient: Some("mock:a".to_string()),
             model_powerful: Some("mock:b".to_string()),
@@ -771,9 +737,7 @@ skip_documentation = true
         assert!(msg.contains("unknown profile 'nope'"), "{msg}");
         assert!(msg.contains("default"), "{msg}");
         // Built-in backend names are advertised too.
-        for b in ["devin", "claude", "codex"] {
-            assert!(msg.contains(b), "{msg}");
-        }
+        assert!(msg.contains("opencode"), "{msg}");
     }
 
     #[test]
@@ -798,12 +762,21 @@ skip_documentation = true
 
     #[test]
     fn backend_names_are_builtin_profiles() {
-        let p = builtin_profile("claude").unwrap();
+        let p = builtin_profile("opencode").unwrap();
         let m = p.models.unwrap();
-        assert_eq!(m.efficient.as_deref(), Some("claude:sonnet@low"));
-        assert_eq!(m.powerful.as_deref(), Some("claude:sonnet@high"));
-        assert!(builtin_profile("devin").is_some());
+        assert_eq!(m.efficient.as_deref(), Some("opencode"));
+        assert_eq!(m.powerful.as_deref(), Some("opencode"));
+        assert_eq!(
+            builtin_profile("devin")
+                .unwrap()
+                .models
+                .unwrap()
+                .efficient
+                .as_deref(),
+            Some("devin:swe-2-medium")
+        );
         assert!(builtin_profile("codex").is_some());
+        assert!(builtin_profile("claude").is_some());
         // `mock`/`test` parse as a backend but are not profiles.
         assert!(builtin_profile("mock").is_none());
         assert!(builtin_profile("test").is_none());
@@ -811,10 +784,10 @@ skip_documentation = true
 
     #[test]
     fn toml_profile_shadows_builtin_backend() {
-        // A TOML [profiles.claude] wins over the built-in `claude`.
+        // A TOML [profiles.opencode] wins over the built-in `opencode`.
         let defined = TomlConfig {
             profiles: Some(HashMap::from([(
-                "claude".to_string(),
+                "opencode".to_string(),
                 TomlConfig {
                     max_parallels: Some(3),
                     ..Default::default()
@@ -822,7 +795,7 @@ skip_documentation = true
             )])),
             ..Default::default()
         };
-        let p = find_profile("claude", Some(&defined), None).unwrap();
+        let p = find_profile("opencode", Some(&defined), None).unwrap();
         assert_eq!(p.max_parallels, Some(3));
     }
 }

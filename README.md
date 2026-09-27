@@ -5,9 +5,8 @@ architecture documentation for any repository — then double-checks the
 generated dependency claims against the real import graph, so drift
 between docs and code gets caught instead of shipped.
 
-Every LLM call is a subprocess to an agent CLI you already have
-(`devin`, `claude`, `codex`) — subscription auth, no metered API key,
-no extra infra. A CLI-agent-native rewrite of
+Every LLM call uses an already-authenticated agent CLI through
+[`agent-core`](https://github.com/tidusvn05/agent-core). A CLI-agent-native rewrite of
 [deepwiki-rs](https://github.com/sopaco/deepwiki-rs).
 
 ```sh
@@ -28,9 +27,8 @@ agentwiki drift        # verify claims vs code → .agentwiki/drift.json
   code contradicts.
 - **Any stack, any language of prose** — static import extraction for
   Rust, Python, and JS/TS; docs render in `en zh ja ko de fr ru vi`.
-- **Zero platform setup** — the agent CLI on your `PATH` *is* the
-  backend; billing env vars are stripped so calls stay on subscription
-  auth.
+- **Local CLI backends** — Claude, Codex, Devin, or OpenCode v2 on your `PATH`;
+  billing environment variables are stripped so it uses saved authentication.
 
 ## What it produces
 
@@ -132,29 +130,24 @@ Two more verified walkthroughs live under [`examples/`](./examples/README.md):
 
 ## Prerequisites
 
-At least one agent CLI, installed and authenticated:
-
-| Backend | CLI | Model string example |
-|---|---|---|
-| `devin` | [Devin CLI](https://devin.ai) | `devin:swe-2-medium` (default) |
-| `claude` | Claude Code CLI | `claude:sonnet` |
-| `codex` | Codex CLI | `codex:gpt-5.6-sol@high` |
+Install and authenticate at least one CLI: Claude, Codex, Devin, or
+[OpenCode v2](https://opencode.ai/v2/docs). OpenCode major version 1 is not
+supported. The default backend is OpenCode v2; select another with a profile
+or model string.
 
 Billing-related env vars (`ANTHROPIC_*`, `OPENAI_*`, `DEVIN_API*`, …) are
-stripped from spawned children so calls stay on subscription auth, not API
-billing.
+stripped from spawned children. Authenticate the CLI you want before running
+agentwiki. For OpenCode, pending headless permissions follow its default;
+agentwiki does not enable automatic approval.
 
-The codex and claude backends accept an optional `@<effort>` suffix on the
-model — `codex:<model>@<effort>` sets `model_reasoning_effort`
-(`low medium high xhigh max ultra`), `claude:<model>@<effort>` maps to
-`--effort` (`low medium high xhigh max`). A bare `<backend>:<model>`
-inherits the CLI's configured default. A balanced pairing for doc
-generation:
+Use the CLI name to inherit its configured model, or provide a model. For
+example, `opencode:<provider/model#variant>`, `claude:sonnet@high`,
+`codex:gpt-5.6-sol@high`, or `devin:swe-2-medium`.
 
 ```toml
 [models]
-efficient = "codex:gpt-5.6-sol@low"    # fan-out summaries + JSON extraction
-powerful  = "codex:gpt-5.6-sol@high"   # architecture/workflow/deep-dive writing
+efficient = "opencode:openai/gpt-5#low"
+powerful  = "opencode:openai/gpt-5#high"
 ```
 
 ## Install
@@ -187,10 +180,12 @@ cd agentwiki && cargo build --release
 
 ```sh
 cd your-repo
-agentwiki                            # auto-detect backend: devin → codex → claude
-agentwiki devin                      # or pick a backend explicitly
+agentwiki                            # OpenCode v2, configured default model
+agentwiki opencode --target-language vi
 agentwiki claude --target-language vi
 agentwiki codex --target-language ja
+agentwiki devin
+agentwiki --model-powerful opencode:openai/gpt-5#high
 ```
 
 Docs land in `./agentwiki.docs/`; cache and run state in `./.agentwiki/`.
@@ -205,7 +200,7 @@ Useful flags:
 | `-o, --output-path` | docs output dir (default `./agentwiki.docs`) |
 | `--agentic` | let the agent read the repo itself instead of embedding code |
 | `--target-language` | `en zh ja ko de fr ru vi` |
-| `--model-efficient` / `--model-powerful` | `"<backend>:<model>"` per tier |
+| `--model-efficient` / `--model-powerful` | `<backend>` or `<backend>:<model>` per tier |
 | `--max-parallels` | concurrent CLI calls (default `2`) |
 | `--dry-run` | print resolved config + task DAG, exit |
 | `--skip-research` | reuse `.agentwiki/research.json`, only recompose |
@@ -333,8 +328,8 @@ max_parallels = 4
 incremental = true            # cosmetic diffs → 0-call no-op (see `status`)
 
 [models]
-efficient = "devin:swe-2-medium"
-powerful  = "devin:swe-2-max"
+efficient = "opencode"
+powerful  = "opencode"
 
 [limits]
 daily_cap       = 300
@@ -360,16 +355,9 @@ max_transitive_depth = 3             # hops for `confirmed transitive`
 skip_documentation = true
 ```
 
-`agentwiki` and `agentwiki default` are equivalent — `default`, `devin`,
-`claude`, `codex` are built-in profiles, so they work even with no config
-file. A backend profile just sets `[models]` to that CLI's default pair
-(`claude` → `sonnet@low`/`sonnet@high`, `codex` → `gpt-5.6-sol@low`/`@high`,
-`devin` → `swe-2-medium`); defining `[profiles.<name>]` yourself overrides
-the built-in.
-
-When no model is configured anywhere — no `[models]` in config, profile, or
-`--model-*` flags — agentwiki picks the first agent CLI on `PATH`, in the
-order **devin → codex → claude**.
+`agentwiki` and `agentwiki default` use OpenCode v2 with its configured model.
+Built-in profiles `opencode`, `claude`, `codex`, and `devin` select their
+respective CLI. Defining `[profiles.<name>]` overrides a built-in profile.
 
 ### `embedded` vs `agentic` mode
 
@@ -379,7 +367,7 @@ order **devin → codex → claude**.
 | Agent cwd | empty dir (`.agentwiki/empty-cwd`) — repo invisible | the project root |
 | Prompt size | capped by `limits.materials_char_cap` (192 KB) | no cap — agent explores as needed |
 | Speed/cost | predictable, faster | slower — agents spend turns reading files |
-| Requirements | any CLI | CLI must have working file tools (`devin`, `claude`, `codex` all do) |
+| Requirements | one supported CLI | a supported CLI with file tools enabled |
 
 Use **embedded** for routine runs — deterministic context, no wandering.
 Use **agentic** (`--agentic` or `mode = "agentic"`) for large or tangled

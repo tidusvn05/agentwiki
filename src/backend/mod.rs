@@ -1,11 +1,8 @@
 //! `AgentBackend` abstraction: one CLI agent == one backend.
 //!
-//! Adding a backend = one file + one arm in [`for_kind`]. Model strings follow
-//! `"<backend>:<model>"`; the part after `:` is passed through to the CLI.
+//! Model strings use `<backend>:<model>` and are delegated to `agent-core`.
 
-pub mod claude;
-pub mod codex;
-pub mod devin;
+pub mod cli;
 pub mod mock;
 
 use std::path::PathBuf;
@@ -13,19 +10,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::process::Command;
 
 use crate::error::{Error, Result};
 
 /// Which CLI backs an [`AgentBackend`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackendKind {
-    /// `devin` CLI.
-    Devin,
-    /// `claude` CLI.
     Claude,
-    /// `codex` CLI.
     Codex,
+    Devin,
+    /// OpenCode v2 CLI.
+    OpenCode,
     /// In-process mock for tests (`mock:<model>`).
     Mock,
 }
@@ -47,9 +42,10 @@ impl BackendKind {
             None => (s, None),
         };
         let kind = match name.to_lowercase().as_str() {
-            "devin" => BackendKind::Devin,
             "claude" => BackendKind::Claude,
             "codex" => BackendKind::Codex,
+            "devin" => BackendKind::Devin,
+            "opencode" => BackendKind::OpenCode,
             "mock" | "test" => BackendKind::Mock,
             other => {
                 return Err(Error::BackendNotAvailable(format!(
@@ -63,31 +59,31 @@ impl BackendKind {
     /// Stable lowercase id used in logs, cache keys and audit lines.
     pub fn as_str(&self) -> &'static str {
         match self {
-            BackendKind::Devin => "devin",
             BackendKind::Claude => "claude",
             BackendKind::Codex => "codex",
+            BackendKind::Devin => "devin",
+            BackendKind::OpenCode => "opencode",
             BackendKind::Mock => "mock",
         }
     }
 
-    /// Default `"<backend>:<model>"` strings for (efficient, powerful) —
-    /// used by the backend-name built-in profiles and PATH auto-detection.
+    /// Default model strings for (efficient, powerful).
     pub fn default_models(&self) -> (String, String) {
         let (e, p) = match self {
-            BackendKind::Devin => ("devin:swe-2-medium", "devin:swe-2-medium"),
             BackendKind::Claude => ("claude:sonnet@low", "claude:sonnet@high"),
             BackendKind::Codex => ("codex:gpt-5.6-sol@low", "codex:gpt-5.6-sol@high"),
+            BackendKind::Devin => ("devin:swe-2-medium", "devin:swe-2-medium"),
+            BackendKind::OpenCode => ("opencode", "opencode"),
             BackendKind::Mock => ("mock:test", "mock:test"),
         };
         (e.to_string(), p.to_string())
     }
 
-    /// First agent CLI found on `PATH`, in preference order
-    /// devin → codex → claude.
+    /// First installed agent CLI, preferring OpenCode v2.
     pub fn detect() -> Option<BackendKind> {
-        [BackendKind::Devin, BackendKind::Codex, BackendKind::Claude]
+        [Self::OpenCode, Self::Codex, Self::Claude, Self::Devin]
             .into_iter()
-            .find(|k| crate::sys::find_on_path(k.as_str()).is_some())
+            .find(|kind| crate::sys::find_on_path(kind.as_str()).is_some())
     }
 }
 
@@ -112,8 +108,8 @@ pub struct AgentRequest {
     pub timeout: Duration,
     /// Agent name, for span/log correlation.
     pub agent: String,
-    /// JSON Schema for structured agents; backends that support response
-    /// schemas (codex `--output-schema`) enforce it, others ignore it.
+    /// JSON Schema for structured agents. Claude and Codex enforce it;
+    /// agentwiki also includes it in the prompt and validates the response.
     pub json_schema: Option<serde_json::Value>,
 }
 
@@ -148,16 +144,15 @@ pub trait AgentBackend: Send + Sync {
 /// Construct a backend by kind — the only place `match` on kinds lives.
 pub fn for_kind(kind: BackendKind) -> Arc<dyn AgentBackend> {
     match kind {
-        BackendKind::Devin => Arc::new(devin::DevinBackend),
-        BackendKind::Claude => Arc::new(claude::ClaudeBackend),
-        BackendKind::Codex => Arc::new(codex::CodexBackend),
+        BackendKind::Claude | BackendKind::Codex | BackendKind::Devin | BackendKind::OpenCode => {
+            Arc::new(cli::CliBackend { kind })
+        }
         BackendKind::Mock => Arc::new(mock::MockBackend::canned(&[])),
     }
 }
 
-/// Env vars that would flip a CLI onto metered API billing or confuse session
-/// state — never inherited by spawned agents. Defined once, used by every
-/// backend.
+/// Env vars that could change CLI provider billing. CLIs use saved
+/// authentication instead of inheriting these variables from agentwiki.
 const BANNED_PREFIXES: &[&str] = &[
     "ANTHROPIC_",
     "OPENAI_",
@@ -167,14 +162,18 @@ const BANNED_PREFIXES: &[&str] = &[
     "OPENHANDS_",
 ];
 
-/// Strip billing-related env vars from a child command.
-pub fn sanitized_env(cmd: &mut Command) {
-    for (key, _) in std::env::vars_os() {
-        let k = key.to_string_lossy();
-        if BANNED_PREFIXES.iter().any(|p| k.starts_with(p)) {
-            cmd.env_remove(&key);
-        }
-    }
+/// Names to remove from the OpenCode child environment.
+pub fn billing_env_keys() -> Vec<std::ffi::OsString> {
+    std::env::vars_os()
+        .filter_map(|(key, _)| {
+            let k = key.to_string_lossy();
+            if BANNED_PREFIXES.iter().any(|p| k.starts_with(p)) || k.ends_with("_API_KEY") {
+                Some(key)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Last `n` chars of a string for error messages.
@@ -189,14 +188,25 @@ mod tests {
 
     #[test]
     fn parse_model_strings() {
-        let (k, m) = BackendKind::parse("devin:swe-2-medium").unwrap();
-        assert_eq!(k, BackendKind::Devin);
-        assert_eq!(m.as_deref(), Some("swe-2-medium"));
+        let (k, m) = BackendKind::parse("opencode:openai/gpt-5#high").unwrap();
+        assert_eq!(k, BackendKind::OpenCode);
+        assert_eq!(m.as_deref(), Some("openai/gpt-5#high"));
 
-        let (k, m) = BackendKind::parse("claude").unwrap();
-        assert_eq!(k, BackendKind::Claude);
+        let (k, m) = BackendKind::parse("opencode").unwrap();
+        assert_eq!(k, BackendKind::OpenCode);
         assert_eq!(m, None);
 
-        assert!(BackendKind::parse("openai:gpt-5").is_err());
+        assert_eq!(
+            BackendKind::parse("claude:sonnet").unwrap().0,
+            BackendKind::Claude
+        );
+        assert_eq!(
+            BackendKind::parse("codex:gpt-5").unwrap().0,
+            BackendKind::Codex
+        );
+        assert_eq!(
+            BackendKind::parse("devin:swe-2-medium").unwrap().0,
+            BackendKind::Devin
+        );
     }
 }

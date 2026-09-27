@@ -3,9 +3,21 @@
 version = 4
 
 [[package]]
-name = "agentwiki"
-version = "0.6.0"
+name = "agent-core"
+version = "0.2.0"
+source = "git+https://github.com/tidusvn05/agent-core?tag=v0.2.0#b9644342fcc9d952d6c5d37003a2fc00a1e6e1b1"
 dependencies = [
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "agentwiki"
+version = "0.7.0"
+dependencies = [
+ "agent-core",
  "anyhow",
  "assert_fs",
  "async-trait",

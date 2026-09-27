@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 
 /// Process names agentwiki may spawn (or that indicate a concurrent run).
 /// Matched against the basename of argv[0], lowercased, `.exe` stripped.
-pub const AGENT_PROCS: &[&str] = &["agentwiki", "devin", "claude", "codex"];
+pub const AGENT_PROCS: &[&str] = &["agentwiki", "opencode", "claude", "codex", "devin"];
 
 /// argv[0] basenames that execute a script given as argv[1] — a
-/// node-installed `codex` shows up as `node /path/to/codex …`.
+/// node-installed `opencode` can show up as `node /path/to/opencode …`.
 const INTERPRETERS: &[&str] = &[
     "node", "bun", "deno", "python", "python3", "sh", "bash", "zsh", "env",
 ];
@@ -166,26 +166,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn parse_ps_rows() {
-        let text = "  123 02:11 /usr/local/bin/devin run --foo\n\
-                    9999 1-02:03:04 /usr/bin/node /opt/x/codex\n\
-                    42 00:01 vim devin.md\n";
+        let text = "  123 02:11 /usr/local/bin/opencode run --foo\n\
+                    9999 1-02:03:04 /usr/bin/node /opt/x/opencode\n\
+                    42 00:01 vim notes.md\n";
         let procs = parse_ps(text, true);
         assert_eq!(procs.len(), 3);
         assert_eq!(procs[0].pid, 123);
-        assert_eq!(procs[0].name, "devin");
+        assert_eq!(procs[0].name, "opencode");
         assert_eq!(procs[0].etime.as_deref(), Some("02:11"));
         assert_eq!(procs[1].name, "node");
-        assert_eq!(procs[1].script.as_deref(), Some("codex"));
-        // `vim devin.md` — argv0 is vim, must not match as an agent.
+        assert_eq!(procs[1].script.as_deref(), Some("opencode"));
+        // `vim notes.md` — argv0 is vim, must not match as an agent.
         assert_eq!(agent_name(&procs[2]), None);
-        assert_eq!(agent_name(&procs[0]), Some("devin"));
-        assert_eq!(agent_name(&procs[1]), Some("codex"));
+        assert_eq!(agent_name(&procs[0]), Some("opencode"));
+        assert_eq!(agent_name(&procs[1]), Some("opencode"));
     }
 
     #[test]
     fn basename_strips_exe_and_dirs() {
-        assert_eq!(basename_lc("/usr/bin/Devin"), "devin");
-        assert_eq!(basename_lc("C:\\tools\\claude.EXE"), "claude");
+        assert_eq!(basename_lc("/usr/bin/OpenCode"), "opencode");
+        assert_eq!(basename_lc("C:\\tools\\opencode.EXE"), "opencode");
         assert_eq!(basename_lc("agentwiki.exe"), "agentwiki");
     }
 

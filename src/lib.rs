@@ -2,7 +2,7 @@
 //!
 //! CLI-agent-native rewrite of deepwiki-rs/Litho: generates C4-style
 //! architecture documentation for an arbitrary repository, using an
-//! already-authenticated agent CLI (`devin`, `claude`, `codex`) as the LLM
+//! already-authenticated agent CLI as the LLM
 //! instead of a paid HTTP API.
 //!
 //! ## Pipeline

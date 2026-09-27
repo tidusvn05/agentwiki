@@ -264,6 +264,9 @@ async fn run_instance_inner(
         return Err(last_err);
     }
     let fb_str = pctx.config.model_for(ModelTier::Powerful).to_string();
+    if fb_str == model_str {
+        return Err(last_err);
+    }
     let Ok((fk, fm)) = BackendKind::parse(&fb_str) else {
         return Err(last_err);
     };

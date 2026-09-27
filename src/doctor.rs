@@ -97,11 +97,25 @@ pub async fn run(project_path: Option<PathBuf>, config_path: Option<PathBuf>, fi
 
     // Agent CLIs on PATH (+ version probe).
     let mut clis = Report::default();
-    for kind in [BackendKind::Devin, BackendKind::Claude, BackendKind::Codex] {
+    for kind in [
+        BackendKind::OpenCode,
+        BackendKind::Claude,
+        BackendKind::Codex,
+        BackendKind::Devin,
+    ] {
         let name = kind.as_str();
         match sys::find_on_path(name) {
             Some(path) => match probe_version(&path).await {
-                Some(v) => clis.add(Status::Ok, format!("{name} {v} ({})", path.display())),
+                Some(v)
+                    if kind != BackendKind::OpenCode
+                        || v.trim_start_matches('v').starts_with("2.") =>
+                {
+                    clis.add(Status::Ok, format!("{name} {v} ({})", path.display()))
+                }
+                Some(v) => clis.add(
+                    Status::Fail,
+                    format!("{name} {v} is unsupported; OpenCode v2 required"),
+                ),
                 None => clis.add(
                     Status::Warn,
                     format!("{name} found at {} but `--version` failed", path.display()),
@@ -499,9 +513,7 @@ mod tests {
 
     #[tokio::test]
     async fn doctor_smoke_on_empty_project() {
-        // An empty temp project: no CLIs required (models unparsed? default
-        // requires devin → would FAIL on machines without it). Point models at
-        // mock so the check is hermetic.
+        // Point models at mock so the check is hermetic.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("agentwiki.toml"),

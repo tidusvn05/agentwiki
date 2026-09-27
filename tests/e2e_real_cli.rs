@@ -1,9 +1,9 @@
 //! Real-CLI end-to-end tests — ignored by default.
 //!
 //! Run one explicitly, e.g.:
-//!   AGENTWIKI_E2E=1 cargo test --test e2e_real_cli devin -- --ignored
+//!   AGENTWIKI_E2E=1 cargo test --test e2e_real_cli opencode -- --ignored
 //!
-//! Each test runs the full pipeline on `tests/fixture-app` with the real
+//! Each test runs the full pipeline on `tests/fixture-app` with a real
 //! authenticated CLI. They spend real quota — keep `daily_cap` low.
 
 use std::collections::HashMap;
@@ -48,28 +48,34 @@ async fn run_e2e(model: &str, kind: BackendKind) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "real devin CLI call; enable with AGENTWIKI_E2E=1"]
-async fn devin_end_to_end() {
+#[ignore = "real OpenCode v2 CLI call; enable with AGENTWIKI_E2E=1"]
+async fn opencode_end_to_end() {
     if !enabled() {
         return;
     }
-    run_e2e("devin:swe-2-medium", BackendKind::Devin).await;
+    run_e2e("opencode", BackendKind::OpenCode).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "real claude CLI call; enable with AGENTWIKI_E2E=1"]
+#[ignore = "real Claude CLI call; enable with AGENTWIKI_E2E=1"]
 async fn claude_end_to_end() {
-    if !enabled() {
-        return;
+    if enabled() {
+        run_e2e("claude:sonnet", BackendKind::Claude).await;
     }
-    run_e2e("claude:sonnet", BackendKind::Claude).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "real codex CLI call; enable with AGENTWIKI_E2E=1"]
+#[ignore = "real Codex CLI call; enable with AGENTWIKI_E2E=1"]
 async fn codex_end_to_end() {
-    if !enabled() {
-        return;
+    if enabled() {
+        run_e2e("codex:gpt-5.6-sol", BackendKind::Codex).await;
     }
-    run_e2e("codex:gpt-5.6-sol@low", BackendKind::Codex).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "real Devin CLI call; enable with AGENTWIKI_E2E=1"]
+async fn devin_end_to_end() {
+    if enabled() {
+        run_e2e("devin:swe-2-medium", BackendKind::Devin).await;
+    }
 }

@@ -4,8 +4,8 @@ version = 4
 
 [[package]]
 name = "agent-core"
-version = "0.2.0"
-source = "git+https://github.com/tidusvn05/agent-core?tag=v0.2.0#b9644342fcc9d952d6c5d37003a2fc00a1e6e1b1"
+version = "0.3.1"
+source = "git+https://github.com/tidusvn05/agent-core?tag=v0.3.1#ec6544763347c74d5be62c8fbb1e9d6e08adff12"
 dependencies = [
  "serde_json",
  "tempfile",

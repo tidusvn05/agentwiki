@@ -12,7 +12,7 @@ keywords = ["documentation", "c4", "architecture", "llm", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-agent-core = { git = "https://github.com/tidusvn05/agent-core", tag = "v0.2.0" }
+agent-core = { git = "https://github.com/tidusvn05/agent-core", tag = "v0.3.1" }
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 clap = { version = "4.6.7", features = ["derive"] }
